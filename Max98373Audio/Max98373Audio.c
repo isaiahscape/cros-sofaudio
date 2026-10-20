@@ -414,9 +414,9 @@ Max98373_InitializeHardware(
     I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2016_THERM_HYSTERESIS, 0x01);
 
     /* Step 4: Digital Audio Interface (DAI) - I2S 48kHz Stereo */
-    /* PCM format: Standard I2S, 24/32-bit slot */
+    /* PCM format: Standard I2S, 32-bit slot width (matches Linux ALSA default 0xC0) */
     I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG,
-                      MAX98373_PCM_FMT_I2S | MAX98373_PCM_BCLKEDGE_RISING);
+                      MAX98373_PCM_MODE_CFG_CHANSZ_32 | MAX98373_PCM_FMT_I2S);
 
     /* Clock Ratio: 64x fs (e.g., 3.072 MHz BCLK for 48 kHz stereo) */
     I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_64);
@@ -426,34 +426,41 @@ Max98373_InitializeHardware(
     I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2028_PCM_SR_SETUP_2, 0x88);
 
     /* Step 5: Speaker Path & Channel Mapping */
-    /* Enable PCM Rx channels 0 & 1 (Left and Right) */
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x03);
+    /* Enable PCM Rx channel 0 */
+    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x01);
 
-    /* Speaker source: 0x01 = Left, 0x02 = Right, 0x03 = Mono Mix (0x00 is None / Disconnected) */
+    /* Speaker source: Left (0x00), Right (0x40), Mono Mix (0x80) */
     if (DevCtx->SpeakerRole == SPEAKER_ROLE_RIGHT) {
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x02); /* Right channel */
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x40); /* Right channel */
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01); /* Slot 1 */
     } else if (DevCtx->SpeakerRole == SPEAKER_ROLE_LEFT) {
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x01); /* Left channel */
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x00); /* Left channel */
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01); /* Slot 1 */
     } else {
         /* Stereo / fallback: mix Left + Right so both speakers play */
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x03);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x80);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
     }
 
     /* Step 6: Amplifier Path Gain & Digital Volume Control */
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203E_AMP_PATH_GAIN, DevCtx->HardwareGain);
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203D_AMP_DIG_VOL_CTRL, DevCtx->VolumeDb);
+    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203E_AMP_PATH_GAIN, 0x0A); /* +18.0 dB gain */
+    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203D_AMP_DIG_VOL_CTRL, MAX98373_AMP_VOL_0DB); /* 0 dB */
+
+    /* Step 6.5: DSP Configuration - Enable DC blocker and dither */
+    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203F_AMP_DSP_CFG, 0x03);
+    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2041_AMP_CFG, 0x03);
 
     /* Step 7: Limiter & Dynamic Headroom Protection */
     I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20D1_DHT_CFG, 0x01);
     I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20D4_DHT_EN, 0x01);
 
-    /* Step 8: Auto restart configuration */
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FE_DEVICE_AUTO_RESTART_CFG, 0x01);
+    /* Step 8: Auto restart configuration (all restart bits active) */
+    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FE_DEVICE_AUTO_RESTART_CFG, 0x0F);
 
     /* Step 9: Power up chip and enable speaker amplifier stage */
     Max98373_SetPowerState(DevCtx, TRUE);
     I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, MAX98373_AMP_ENABLE);
-    Max98373_SetVolume(DevCtx, DevCtx->VolumeDb, FALSE);
+    Max98373_SetVolume(DevCtx, MAX98373_AMP_VOL_0DB, FALSE);
     DevCtx->Streaming = TRUE;
 
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
@@ -507,11 +514,38 @@ Max98373_SetStreamState(
         delay.QuadPart = -10000LL; /* 1ms delay for rail ramp */
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
 
+        /* Re-apply DAI format and speaker routing to guarantee active state */
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG,
+                          MAX98373_PCM_MODE_CFG_CHANSZ_32 | MAX98373_PCM_FMT_I2S);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_64);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2027_PCM_SR_SETUP_1, MAX98373_PCM_SR_48KHZ);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2028_PCM_SR_SETUP_2, 0x88);
+
+        if (DevCtx->SpeakerRole == SPEAKER_ROLE_RIGHT) {
+            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x40);
+            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
+        } else if (DevCtx->SpeakerRole == SPEAKER_ROLE_LEFT) {
+            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x00);
+            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
+        } else {
+            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x80);
+            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
+        }
+
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x01);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203E_AMP_PATH_GAIN, 0x0A);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203F_AMP_DSP_CFG, 0x03);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2041_AMP_CFG, 0x03);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FE_DEVICE_AUTO_RESTART_CFG, 0x0F);
+
         /* Enable amplifier output stage */
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, MAX98373_AMP_ENABLE);
         DevCtx->Streaming = TRUE;
 
         /* Unmute to configured volume */
+        if (DevCtx->VolumeDb >= MAX98373_AMP_VOL_MUTE) {
+            DevCtx->VolumeDb = MAX98373_AMP_VOL_0DB; /* 0 dB full unmuted */
+        }
         Max98373_SetVolume(DevCtx, DevCtx->VolumeDb, FALSE);
     } else {
         /* Soft mute first to erase pop clicks */
@@ -546,7 +580,9 @@ Max98373_SetVolume(
     PAGED_CODE();
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
-    DevCtx->VolumeDb = VolumeDb;
+    if (!Mute) {
+        DevCtx->VolumeDb = VolumeDb;
+    }
     DevCtx->Muted    = Mute;
 
     return I2cWriteRegister8(

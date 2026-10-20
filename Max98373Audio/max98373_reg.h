@@ -137,20 +137,24 @@
 #define MAX98373_AMP_ENABLE                 0x01
 #define MAX98373_AMP_DISABLE                0x00
 
-/* PCM_DATA_FMT_CFG (0x2024) */
-#define MAX98373_PCM_FMT_I2S                0x00
-#define MAX98373_PCM_FMT_LEFT_JUST          0x01
-#define MAX98373_PCM_FMT_TDM                0x02
-#define MAX98373_PCM_MODE_CFG_FORMAT_MASK   0x07
-#define MAX98373_PCM_TX_CH_INTERLEAVE_MASK  (1 << 5)
-#define MAX98373_PCM_BCLKEDGE_RISING        (1 << 4)
+/* PCM_DATA_FMT_CFG (0x2024) - Matching Linux max98373.h */
+#define MAX98373_PCM_FMT_I2S                (0x0 << 3)
+#define MAX98373_PCM_FMT_LEFT_JUST          (0x1 << 3)
+#define MAX98373_PCM_FMT_TDM_MODE0          (0x3 << 3)
+#define MAX98373_PCM_FMT_TDM_MODE1          (0x4 << 3)
+#define MAX98373_PCM_MODE_CFG_FORMAT_MASK   (0x7 << 3)
+#define MAX98373_PCM_MODE_CFG_CHANSZ_16     (0x1 << 6)
+#define MAX98373_PCM_MODE_CFG_CHANSZ_24     (0x2 << 6)
+#define MAX98373_PCM_MODE_CFG_CHANSZ_32     (0x3 << 6)
+#define MAX98373_PCM_MODE_CFG_CHANSZ_MASK   (0x3 << 6)
 
 /* PCM_CLOCK_RATIO (0x2026) */
+#define MAX98373_PCM_BCLKEDGE_RISING        (1 << 4)
 #define MAX98373_CLOCK_RATIO_16             0x01  /* BCLK / LRCLK = 16 */
 #define MAX98373_CLOCK_RATIO_32             0x02  /* BCLK / LRCLK = 32 */
-#define MAX98373_CLOCK_RATIO_64             0x04  /* BCLK / LRCLK = 64 (Standard 2x24/32) */
-#define MAX98373_CLOCK_RATIO_128            0x05  /* BCLK / LRCLK = 128 */
-#define MAX98373_CLOCK_RATIO_256            0x06  /* BCLK / LRCLK = 256 (TDM) */
+#define MAX98373_CLOCK_RATIO_64             0x04  /* BCLK / LRCLK = 64 (Standard 2x32) */
+#define MAX98373_CLOCK_RATIO_128            0x06  /* BCLK / LRCLK = 128 */
+#define MAX98373_CLOCK_RATIO_256            0x08  /* BCLK / LRCLK = 256 (TDM) */
 
 /* PCM_SR_SETUP_1 (0x2027) */
 #define MAX98373_PCM_SR_8KHZ                0x00
@@ -161,8 +165,8 @@
 
 /* AMP_PATH_GAIN (0x203E) - Analog & Digital Gain */
 #define MAX98373_AMP_PATH_GAIN_MASK         0x3F
-#define MAX98373_SPK_GAIN_DEFAULT           0x08  /* +15.5 dB */
+#define MAX98373_SPK_GAIN_DEFAULT           0x0A  /* +18.0 dB */
 
 /* AMP_DIG_VOL_CTRL (0x203D) */
 #define MAX98373_AMP_VOL_0DB                0x00  /* 0 dB */
-#define MAX98373_AMP_VOL_MUTE               0xFF  /* Mute / -127.5 dB */
+#define MAX98373_AMP_VOL_MUTE               0x7F  /* Mute / -63.5 dB */
