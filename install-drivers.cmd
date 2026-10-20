@@ -64,12 +64,12 @@ if exist "%CERTPATH%" (
 echo.
 echo [3/4] Installing complete audio driver stack to system...
 if exist "%BUS_INF%" (
-    echo [1/4] Installing Intel AudioDSP Bus Driver (SklHdaudBus)...
+    echo [1/4] Installing Intel AudioDSP Bus Driver - SklHdaudBus...
     pnputil /add-driver "%BUS_INF%" /install
 )
 
 if exist "%SOF_INF%" (
-    echo [2/4] Installing Intel Sound Open Firmware WaveRT Driver (CsAudioIntcsof)...
+    echo [2/4] Installing Intel Sound Open Firmware WaveRT Driver - CsAudioIntcsof...
     pnputil /add-driver "%SOF_INF%" /install
 )
 
@@ -95,7 +95,7 @@ set TEST_EXE=%~dp0x64\Release\CrosAudioTest.exe
 if not exist "%TEST_EXE%" set TEST_EXE=%~dp0CrosAudioTest.exe
 
 if exist "%TEST_EXE%" (
-    set /p RUN_TEST="Would you like to run the audio diagnostic tester now? (Y/N): "
+    set /p RUN_TEST="Would you like to run the audio diagnostic tester now? [Y/N]: "
     if /i "!RUN_TEST!"=="Y" (
         start "" "%TEST_EXE%"
     )
