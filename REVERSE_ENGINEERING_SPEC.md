@@ -8,6 +8,8 @@ Modern Intel-based Chromebooks (Comet Lake, Tiger Lake, Jasper Lake, Alder Lake,
 * The internal stereo speakers are powered by one or two **Maxim MAX98373** Class-D smart power amplifiers connected via an I2S/TDM link and controlled over an I2C bus.
 * The 3.5mm analog audio jack and microphone input are handled by a **Nuvoton NAU88L25** high-performance audio codec, controlled over I2C and providing hardware-level jack detection through a dedicated GPIO interrupt.
 
+> **Pioneer & Architecture Attribution:** The Windows PortCls / AudioDSP architecture (`SklHdaudBus` and `CsAudio` sidecar callback framework) was originally reverse-engineered and implemented for Chromebooks by **CoolStar** ([@coolstarorg](https://github.com/coolstar)).
+
 ```
                       +---------------------------------------+
                       |       Windows 11 Audio Engine         |

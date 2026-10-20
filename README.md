@@ -39,7 +39,16 @@ On modern Chromebooks running coreboot / UEFI firmware (such as MrChromebox UEFI
 +------------------------+  +-----------------------+
 ```
 
-### Driver Features
+* **SklHdaudBus.sys**:
+  * Intel AudioDSP / HD Audio PCI Controller Bus Driver (adapted from CoolStar).
+  * Manages Intel PCH PCI controllers (Skylake through Meteor Lake).
+  * Parses ACPI NHLT (Non-HD Audio Link Table) blobs and manages cyclic DMA stream allocation.
+  * Exposes `GUID_ADSP_BUS_INTERFACE` on child PDO `CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_%04X`.
+* **CsAudioIntcsof.sys**:
+  * Intel Sound Open Firmware (SOF) PortCls WaveRT Miniport Driver.
+  * Connects to `SklHdaudBus` via `GUID_ADSP_BUS_INTERFACE` to stream raw audio samples.
+  * Registers 4 WaveRT endpoints: Speakers (MAX98373), Headphones (NAU88L25), Internal Digital Mic Array, and Headset Mic Jack (NAU88L25).
+  * Coordinates real-time hardware stream states with codec sidecars over `\CallBack\CsAudioCallbackAPI` and `GUID_DEVINTERFACE_CSAUDIO_CODEC`.
 * **Max98373Audio.sys**:
   * ACPI Hardware IDs: `ACPI\MX98373`, `ACPI\MAX98373`
   * Full 16-bit register address, 8-bit data I2C transaction engine over Windows SPB.
@@ -58,10 +67,10 @@ On modern Chromebooks running coreboot / UEFI firmware (such as MrChromebox UEFI
 
 ## Quick Installation
 
-1. Download the latest `cros-sofaudio-v1.0.0.zip` from the [Releases](https://github.com/isaiahscape/cros-sofaudio/releases) page.
+1. Download the latest `cros-sofaudio-v1.1.0.zip` from the [Releases](https://github.com/isaiahscape/cros-sofaudio/releases) page.
 2. Extract the ZIP archive on your Chromebook.
 3. Right-click **`install-drivers.cmd`** and select **Run as administrator**.
-   * It will self-elevate, install the security certificate to the Windows Trusted Certificate store, and install both drivers via `pnputil`.
+   * It will self-elevate, install the security certificate to the Windows Trusted Certificate store, and install the complete driver stack (`SklHdaudBus`, `CsAudioIntcsof`, `Max98373Audio`, `Nau8825Audio`) via `pnputil`.
 4. (Optional) Run `cros_audio_test.exe` to inspect live hardware registers and monitor jack plug/unplug events.
 
 ---
@@ -91,7 +100,23 @@ The bundled test utility connects to both driver interfaces via IOCTLs:
 
 ---
 
+## Credits & Acknowledgements
+
+This project builds heavily upon and incorporates open-source source code and reverse-engineering research by:
+
+* **[CoolStar](https://github.com/coolstar)** ([@coolstarorg](https://github.com/coolstar))
+  * **Original creator of `sklhdaudbus` and pioneer of the `csaudio` Windows audio architecture for Chromebooks.**
+  * Author of [coolstar/sklhdaudbus](https://github.com/coolstar/sklhdaudbus), [coolstar/csaudioacp3x](https://github.com/coolstar/csaudioacp3x), and [coolstar/csaudiosstcatpt](https://github.com/coolstar/csaudiosstcatpt).
+  * CoolStar's reverse-engineering of the Intel HD Audio / ADSP bus, ACPI NHLT parsing, and decoupled codec sidecar callback mechanism is the foundation for this driver suite. Full credit and gratitude go to CoolStar for making Windows on Chromebook audio possible!
+  * See [CREDITS.md](CREDITS.md) for full details.
+
+* **[MrChromebox](https://mrchromebox.tech)** for coreboot / UEFI firmware.
+* **The Sound Open Firmware (SOF) Project & Linux ALSA Team** for kernel hardware topologies and specs.
+
+---
+
 ## License
 
 Licensed under the [MIT License](LICENSE).  
+Portions copyright (c) CoolStar.  
 Copyright (c) 2026 Leonardo (The Scape Network).

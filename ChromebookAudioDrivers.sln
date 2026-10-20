@@ -8,6 +8,10 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Nau8825Audio", "Nau8825Audi
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CrosAudioTest", "CrosAudioTest\CrosAudioTest.vcxproj", "{4637B001-A120-4E1F-A882-C705A0D10001}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SklHdaudBus", "SklHdaudBus\SklHdaudBus.vcxproj", "{752A2CAE-3455-4D18-A184-8B34B22632CE}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CsAudioIntcsof", "CsAudioIntcsof\CsAudioIntcsof.vcxproj", "{836BA6D1-3FF7-4411-8BCD-469553452DCF}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -26,6 +30,14 @@ Global
 		{4637B001-A120-4E1F-A882-C705A0D10001}.Debug|x64.Build.0 = Debug|x64
 		{4637B001-A120-4E1F-A882-C705A0D10001}.Release|x64.ActiveCfg = Release|x64
 		{4637B001-A120-4E1F-A882-C705A0D10001}.Release|x64.Build.0 = Release|x64
+		{752A2CAE-3455-4D18-A184-8B34B22632CE}.Debug|x64.ActiveCfg = Debug|x64
+		{752A2CAE-3455-4D18-A184-8B34B22632CE}.Debug|x64.Build.0 = Debug|x64
+		{752A2CAE-3455-4D18-A184-8B34B22632CE}.Release|x64.ActiveCfg = Release|x64
+		{752A2CAE-3455-4D18-A184-8B34B22632CE}.Release|x64.Build.0 = Release|x64
+		{836BA6D1-3FF7-4411-8BCD-469553452DCF}.Debug|x64.ActiveCfg = Debug|x64
+		{836BA6D1-3FF7-4411-8BCD-469553452DCF}.Debug|x64.Build.0 = Debug|x64
+		{836BA6D1-3FF7-4411-8BCD-469553452DCF}.Release|x64.ActiveCfg = Release|x64
+		{836BA6D1-3FF7-4411-8BCD-469553452DCF}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

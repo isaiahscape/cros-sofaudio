@@ -60,10 +60,17 @@ if %BUILD_EXIT% equ 0 (
     set SIGNTOOL="C:\Program Files (x86)\Windows Kits\10\bin\10.0.28000.0\x64\signtool.exe"
     if exist !SIGNTOOL! (
         echo [INFO] Signing driver packages with The Scape Network certificate...
-        !SIGNTOOL! sign /v /s My /sha1 38E2878D911EFA90E0A211EB80DC227B51166126 /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "%ROOT_DIR%x64\Release\Max98373Audio\Max98373Audio.sys" "%ROOT_DIR%x64\Release\Max98373Audio\max98373audio.cat" "%ROOT_DIR%x64\Release\Nau8825Audio\Nau8825Audio.sys" "%ROOT_DIR%x64\Release\Nau8825Audio\nau8825audio.cat" "%ROOT_DIR%x64\Release\CrosAudioTest.exe" >nul 2>&1
+        !SIGNTOOL! sign /v /s My /sha1 38E2878D911EFA90E0A211EB80DC227B51166126 /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 ^
+            "%ROOT_DIR%x64\Release\Max98373Audio\Max98373Audio.sys" "%ROOT_DIR%x64\Release\Max98373Audio\max98373audio.cat" ^
+            "%ROOT_DIR%x64\Release\Nau8825Audio\Nau8825Audio.sys" "%ROOT_DIR%x64\Release\Nau8825Audio\nau8825audio.cat" ^
+            "%ROOT_DIR%x64\Release\SklHdaudBus\SklHdaudBus.sys" "%ROOT_DIR%x64\Release\SklHdaudBus\sklhdaudbus.cat" ^
+            "%ROOT_DIR%x64\Release\CsAudioIntcsof\CsAudioIntcsof.sys" "%ROOT_DIR%x64\Release\CsAudioIntcsof\csaudiointcsof.cat" ^
+            "%ROOT_DIR%x64\Release\CrosAudioTest.exe" >nul 2>&1
         if exist "%ROOT_DIR%TheScapeNetwork.cer" (
             copy /y "%ROOT_DIR%TheScapeNetwork.cer" "%ROOT_DIR%x64\Release\Max98373Audio\TheScapeNetwork.cer" >nul
             copy /y "%ROOT_DIR%TheScapeNetwork.cer" "%ROOT_DIR%x64\Release\Nau8825Audio\TheScapeNetwork.cer" >nul
+            copy /y "%ROOT_DIR%TheScapeNetwork.cer" "%ROOT_DIR%x64\Release\SklHdaudBus\TheScapeNetwork.cer" >nul
+            copy /y "%ROOT_DIR%TheScapeNetwork.cer" "%ROOT_DIR%x64\Release\CsAudioIntcsof\TheScapeNetwork.cer" >nul
             copy /y "%ROOT_DIR%TheScapeNetwork.cer" "%ROOT_DIR%x64\Release\TheScapeNetwork.cer" >nul
         )
         echo [INFO] Driver packages signed successfully.
@@ -82,6 +89,12 @@ if %BUILD_EXIT% equ 0 (
     echo   - x64\Release\Nau8825Audio\Nau8825Audio.sys >> "!ERROR_LOG!"
     echo   - x64\Release\Nau8825Audio\Nau8825Audio.inf >> "!ERROR_LOG!"
     echo   - x64\Release\Nau8825Audio\nau8825audio.cat >> "!ERROR_LOG!"
+    echo   - x64\Release\SklHdaudBus\SklHdaudBus.sys >> "!ERROR_LOG!"
+    echo   - x64\Release\SklHdaudBus\sklhdaudbus.inf >> "!ERROR_LOG!"
+    echo   - x64\Release\SklHdaudBus\sklhdaudbus.cat >> "!ERROR_LOG!"
+    echo   - x64\Release\CsAudioIntcsof\CsAudioIntcsof.sys >> "!ERROR_LOG!"
+    echo   - x64\Release\CsAudioIntcsof\csaudiointcsof.inf >> "!ERROR_LOG!"
+    echo   - x64\Release\CsAudioIntcsof\csaudiointcsof.cat >> "!ERROR_LOG!"
     echo   - x64\Release\CrosAudioTest.exe >> "!ERROR_LOG!"
     echo -------------------------------------------------------------------- >> "!ERROR_LOG!"
 

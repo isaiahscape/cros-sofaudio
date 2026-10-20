@@ -1,11 +1,13 @@
 # Chromebook Audio Driver Installation & Deployment Guide
-## Windows 11 Support for MAX98373 Speaker Amp & NAU88L25 Headphone Jack
+## Complete Windows 11 Audio Driver Stack (SOF AudioDSP + MAX98373 + NAU88L25)
+
+> **Credits:** Built upon foundational reverse-engineering and source code by **CoolStar** ([@coolstarorg](https://github.com/coolstar)), creator of `sklhdaudbus` and the `csaudio` architecture.
 
 ### 1. Prerequisites
 
 Before installing the audio drivers on your Intel-based Chromebook running Windows 11:
 1. **Custom UEFI Firmware:** Your Chromebook must have full UEFI firmware flashed (e.g., via **MrChromebox coreboot/UEFI firmware**) with ChromeOS Write-Protect disabled.
-2. **Intel HD Audio / Bus Driver:** Ensure that an Intel AudioDSP / HD Audio bus driver (such as CoolStar's `sklhdaudbus` or `csaudiointcsof`) is installed so the audio pipelines are present.
+2. **Complete 4-Driver Stack:** This repository now includes the complete audio stack: `SklHdaudBus` (Intel HD Audio / AudioDSP bus driver), `CsAudioIntcsof` (Intel SOF WaveRT driver), `Max98373Audio` (internal speakers), and `Nau8825Audio` (headphone jack & mic).
 3. **Test Signing Enabled:** Because these drivers are self-built open source drivers, Windows 11 requires Test Signing to be turned on.
 
 ---

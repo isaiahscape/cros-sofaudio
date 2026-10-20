@@ -22,6 +22,14 @@ echo.
 set CERTPATH=%~dp0TheScapeNetwork.cer
 if not exist "%CERTPATH%" set CERTPATH=%~dp0x64\Release\TheScapeNetwork.cer
 
+set BUS_INF=%~dp0SklHdaudBus\sklhdaudbus.inf
+if not exist "%BUS_INF%" set BUS_INF=%~dp0x64\Release\SklHdaudBus\sklhdaudbus.inf
+if not exist "%BUS_INF%" set BUS_INF=%~dp0x64\Release\sklhdaudbus.inf
+
+set SOF_INF=%~dp0CsAudioIntcsof\csaudiointcsof.inf
+if not exist "%SOF_INF%" set SOF_INF=%~dp0x64\Release\CsAudioIntcsof\csaudiointcsof.inf
+if not exist "%SOF_INF%" set SOF_INF=%~dp0x64\Release\csaudiointcsof.inf
+
 set MAX_INF=%~dp0Max98373Audio\Max98373Audio.inf
 if not exist "%MAX_INF%" set MAX_INF=%~dp0x64\Release\Max98373Audio\Max98373Audio.inf
 if not exist "%MAX_INF%" set MAX_INF=%~dp0x64\Release\Max98373Audio.inf
@@ -32,7 +40,7 @@ if not exist "%NAU_INF%" set NAU_INF=%~dp0x64\Release\Nau8825Audio.inf
 
 if not exist "%MAX_INF%" (
     echo [ERROR] Driver package files not found!
-    echo Please make sure Max98373Audio.inf is present or run build.cmd first.
+    echo Please make sure driver INF files are present or run build.cmd first.
     echo.
     pause
     exit /b 1
@@ -54,18 +62,28 @@ if exist "%CERTPATH%" (
 
 :: 3. Install driver packages via pnputil
 echo.
-echo [3/4] Installing driver packages to system...
-echo Installing Maxim MAX98373 Smart Amplifier driver...
+echo [3/4] Installing complete audio driver stack to system...
+if exist "%BUS_INF%" (
+    echo [1/4] Installing Intel AudioDSP Bus Driver (SklHdaudBus)...
+    pnputil /add-driver "%BUS_INF%" /install
+)
+
+if exist "%SOF_INF%" (
+    echo [2/4] Installing Intel Sound Open Firmware WaveRT Driver (CsAudioIntcsof)...
+    pnputil /add-driver "%SOF_INF%" /install
+)
+
+echo [3/4] Installing Maxim MAX98373 Smart Amplifier driver...
 pnputil /add-driver "%MAX_INF%" /install
 
 echo.
-echo Installing Nuvoton NAU88L25 Headset Codec driver...
+echo [4/4] Installing Nuvoton NAU88L25 Headset Codec driver...
 pnputil /add-driver "%NAU_INF%" /install
 
 :: 4. Check hardware status
 echo.
 echo [4/4] Checking audio hardware device status in Device Manager...
-powershell -NoProfile -Command "Get-PnpDevice | Where-Object { $_.InstanceId -like '*MX98373*' -or $_.InstanceId -like '*MAX98373*' -or $_.InstanceId -like '*10508825*' -or $_.InstanceId -like '*NVTN2000*' -or $_.InstanceId -like '*NAU8825*' } | Format-Table -Property InstanceId, Status, FriendlyName"
+powershell -NoProfile -Command "Get-PnpDevice | Where-Object { $_.InstanceId -like '*MX98373*' -or $_.InstanceId -like '*MAX98373*' -or $_.InstanceId -like '*10508825*' -or $_.InstanceId -like '*NVTN2000*' -or $_.InstanceId -like '*NAU8825*' -or $_.InstanceId -like '*CSAUDIO*' } | Format-Table -Property InstanceId, Status, FriendlyName"
 
 echo.
 echo ==========================================================

@@ -1,0 +1,233 @@
+[Version]
+Signature   = "$Windows NT$"
+Class       = MEDIA
+Provider    = %ProviderName%
+ClassGUID   = {4d36e96c-e325-11ce-bfc1-08002be10318}
+DriverVer   = 10/20/2026, 1.0.0.1
+CatalogFile = csaudiointcsof.cat
+PnpLockDown = 1
+
+[SourceDisksNames]
+222="Intel SOF Audio Driver Disk","",222
+
+[SourceDisksFiles]
+csaudiointcsof.sys=222
+
+[SignatureAttributes]
+csaudiointcsof.sys=SignatureAttributes.DRM
+
+[SignatureAttributes.DRM]
+DRMLevel=1300
+
+[SignatureAttributes.PETrust]
+PETrust=true
+
+[Manufacturer]
+%MfgName%=CSAUDIOINTCSOF,NT$ARCH$
+
+[CSAUDIOINTCSOF.NT$ARCH$]
+%CSAUDIOINTCSOF.DeviceDesc%=CSAUDIOINTCSOF_Inst, CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_9D70 ; Intel Skylake
+%CSAUDIOINTCSOF.DeviceDesc%=CSAUDIOINTCSOF_Inst, CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_9D71 ; Intel Kaby Lake
+%CSAUDIOINTCSOF.DeviceDesc%=CSAUDIOINTCSOF_Inst, CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_5A98 ; Intel Apollo Lake
+%CSAUDIOINTCSOF.DeviceDesc%=CSAUDIOINTCSOF_Inst, CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_3198 ; Intel Gemini Lake
+%CSAUDIOINTCSOF.DeviceDesc%=CSAUDIOINTCSOF_Inst, CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_02C8 ; Intel Comet Lake
+%CSAUDIOINTCSOF.DeviceDesc%=CSAUDIOINTCSOF_Inst, CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_4DC8 ; Intel Jasper Lake
+%CSAUDIOINTCSOF.DeviceDesc%=CSAUDIOINTCSOF_Inst, CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_4B55 ; Intel Elkhart Lake / Jasper Lake
+%CSAUDIOINTCSOF.DeviceDesc%=CSAUDIOINTCSOF_Inst, CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_A0C8 ; Intel Tiger Lake
+%CSAUDIOINTCSOF.DeviceDesc%=CSAUDIOINTCSOF_Inst, CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_51C8 ; Intel Alder Lake-P / Raptor Lake-P
+%CSAUDIOINTCSOF.DeviceDesc%=CSAUDIOINTCSOF_Inst, CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_51CC ; Intel Alder Lake-M
+%CSAUDIOINTCSOF.DeviceDesc%=CSAUDIOINTCSOF_Inst, CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_54C8 ; Intel Alder Lake-N
+%CSAUDIOINTCSOF.DeviceDesc%=CSAUDIOINTCSOF_Inst, CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_51CA ; Intel Raptor Lake-P
+%CSAUDIOINTCSOF.DeviceDesc%=CSAUDIOINTCSOF_Inst, CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_7E28 ; Intel Meteor Lake-P
+%CSAUDIOINTCSOF.DeviceDesc%=CSAUDIOINTCSOF_Inst, CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_7728 ; Intel Arrow Lake-P
+%CSAUDIOINTCSOF.DeviceDesc%=CSAUDIOINTCSOF_Inst, CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_A828 ; Intel Lunar Lake-P
+
+[DestinationDirs]
+CSAUDIOINTCSOF_Inst.CopyList=12
+
+[CSAUDIOINTCSOF_Inst.CopyList]
+csaudiointcsof.sys
+
+[CSAUDIOINTCSOF_Inst.AddReg]
+HKR,,AssociatedFilters,,"wdmaud,swmidi,redbook"
+HKR,,Driver,,csaudiointcsof.sys
+
+HKR,PowerSettings,SingleComponentMultiFxStates,3,1,0,0,0
+HKR,PowerSettings,ConservationIdleTime,3,3,0,0,0
+HKR,PowerSettings,PerformanceIdleTime,3,3,0,0,0
+HKR,PowerSettings,IdlePowerState,3,3,0,0,0
+
+HKR,Drivers,SubClasses,,"wave,midi,mixer"
+HKR,Drivers\wave\wdmaud.drv,Driver,,wdmaud.drv
+HKR,Drivers\midi\wdmaud.drv,Driver,,wdmaud.drv
+HKR,Drivers\mixer\wdmaud.drv,Driver,,wdmaud.drv
+
+HKR,Drivers\wave\wdmaud.drv,Description,,%CSAUDIOINTCSOF.DeviceDesc%
+HKR,Drivers\mixer\wdmaud.drv,Description,,%CSAUDIOINTCSOF.DeviceDesc%
+
+;======================================================
+; capture interfaces: mic array (internal: front)
+;======================================================
+[CSAUDIOINTCSOF.I.WaveMicArray1]
+AddReg=CSAUDIOINTCSOF.I.WaveMicArray1.AddReg
+[CSAUDIOINTCSOF.I.WaveMicArray1.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%CSAUDIOINTCSOF.WaveMicArray1.szPname%
+
+[CSAUDIOINTCSOF.I.TopologyMicArray1]
+AddReg=CSAUDIOINTCSOF.I.TopologyMicArray1.AddReg
+[CSAUDIOINTCSOF.I.TopologyMicArray1.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%CSAUDIOINTCSOF.TopologyMicArray1.szPname%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,0x1
+
+;======================================================
+; capture interfaces: mic (jack)
+;======================================================
+[CSAUDIOINTCSOF.I.WaveMicJack]
+AddReg=CSAUDIOINTCSOF.I.WaveMicJack.AddReg
+[CSAUDIOINTCSOF.I.WaveMicJack.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%CSAUDIOINTCSOF.WaveMicJack.szPname%
+
+[CSAUDIOINTCSOF.I.TopologyMicJack]
+AddReg=CSAUDIOINTCSOF.I.TopologyMicJack.AddReg
+[CSAUDIOINTCSOF.I.TopologyMicJack.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%CSAUDIOINTCSOF.TopologyMicJack.szPname%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,0x1
+
+;======================================================
+; render interfaces: speaker (internal)
+;======================================================
+[CSAUDIOINTCSOF.I.WaveSpeaker]
+AddReg=CSAUDIOINTCSOF.I.WaveSpeaker.AddReg
+[CSAUDIOINTCSOF.I.WaveSpeaker.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%CSAUDIOINTCSOF.WaveSpeaker.szPname%
+
+[CSAUDIOINTCSOF.I.TopologySpeaker]
+AddReg=CSAUDIOINTCSOF.I.TopologySpeaker.AddReg
+[CSAUDIOINTCSOF.I.TopologySpeaker.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%CSAUDIOINTCSOF.TopologySpeaker.szPname%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,0x1
+
+;======================================================
+; render interfaces: headphones (jack)
+;======================================================
+[CSAUDIOINTCSOF.I.WaveHeadphones]
+AddReg=CSAUDIOINTCSOF.I.WaveHeadphones.AddReg
+[CSAUDIOINTCSOF.I.WaveHeadphones.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%CSAUDIOINTCSOF.WaveHeadphones.szPname%
+
+[CSAUDIOINTCSOF.I.TopologyHeadphones]
+AddReg=CSAUDIOINTCSOF.I.TopologyHeadphones.AddReg
+[CSAUDIOINTCSOF.I.TopologyHeadphones.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%CSAUDIOINTCSOF.TopologyHeadphones.szPname%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,0x1
+
+;======================================================
+; CSAUDIOINTCSOF_Inst Installation
+;======================================================
+[CSAUDIOINTCSOF_Inst.NT]
+Include=ks.inf,wdmaudio.inf
+Needs=KS.Registration, WDMAUDIO.Registration
+CopyFiles=CSAUDIOINTCSOF_Inst.CopyList
+AddReg=CSAUDIOINTCSOF_Inst.AddReg
+
+[CSAUDIOINTCSOF_Inst.NT.Interfaces]
+AddInterface=%KSCATEGORY_AUDIO%, %KSNAME_WaveSpeaker%, CSAUDIOINTCSOF.I.WaveSpeaker
+AddInterface=%KSCATEGORY_RENDER%, %KSNAME_WaveSpeaker%, CSAUDIOINTCSOF.I.WaveSpeaker
+AddInterface=%KSCATEGORY_REALTIME%, %KSNAME_WaveSpeaker%, CSAUDIOINTCSOF.I.WaveSpeaker
+AddInterface=%KSCATEGORY_AUDIO%, %KSNAME_TopologySpeaker%, CSAUDIOINTCSOF.I.TopologySpeaker
+AddInterface=%KSCATEGORY_TOPOLOGY%, %KSNAME_TopologySpeaker%, CSAUDIOINTCSOF.I.TopologySpeaker
+
+AddInterface=%KSCATEGORY_AUDIO%, %KSNAME_WaveHeadphones%, CSAUDIOINTCSOF.I.WaveHeadphones
+AddInterface=%KSCATEGORY_RENDER%, %KSNAME_WaveHeadphones%, CSAUDIOINTCSOF.I.WaveHeadphones
+AddInterface=%KSCATEGORY_REALTIME%, %KSNAME_WaveHeadphones%, CSAUDIOINTCSOF.I.WaveHeadphones
+AddInterface=%KSCATEGORY_AUDIO%, %KSNAME_TopologyHeadphones%, CSAUDIOINTCSOF.I.TopologyHeadphones
+AddInterface=%KSCATEGORY_TOPOLOGY%, %KSNAME_TopologyHeadphones%, CSAUDIOINTCSOF.I.TopologyHeadphones
+
+AddInterface=%KSCATEGORY_AUDIO%,    %KSNAME_WaveMicArray1%, CSAUDIOINTCSOF.I.WaveMicArray1
+AddInterface=%KSCATEGORY_REALTIME%, %KSNAME_WaveMicArray1%, CSAUDIOINTCSOF.I.WaveMicArray1
+AddInterface=%KSCATEGORY_CAPTURE%,  %KSNAME_WaveMicArray1%, CSAUDIOINTCSOF.I.WaveMicArray1
+AddInterface=%KSCATEGORY_AUDIO%,    %KSNAME_TopologyMicArray1%, CSAUDIOINTCSOF.I.TopologyMicArray1
+AddInterface=%KSCATEGORY_TOPOLOGY%, %KSNAME_TopologyMicArray1%, CSAUDIOINTCSOF.I.TopologyMicArray1
+
+AddInterface=%KSCATEGORY_AUDIO%,    %KSNAME_WaveMicJack%, CSAUDIOINTCSOF.I.WaveMicJack
+AddInterface=%KSCATEGORY_REALTIME%, %KSNAME_WaveMicJack%, CSAUDIOINTCSOF.I.WaveMicJack
+AddInterface=%KSCATEGORY_CAPTURE%,  %KSNAME_WaveMicJack%, CSAUDIOINTCSOF.I.WaveMicJack
+AddInterface=%KSCATEGORY_AUDIO%,    %KSNAME_TopologyMicJack%, CSAUDIOINTCSOF.I.TopologyMicJack
+AddInterface=%KSCATEGORY_TOPOLOGY%, %KSNAME_TopologyMicJack%, CSAUDIOINTCSOF.I.TopologyMicJack
+
+[CSAUDIOINTCSOF_Inst.NT.Services]
+AddService=CsAudioIntcsof,0x00000002,CsAudioIntcsof_Service_Inst
+
+[CsAudioIntcsof_Service_Inst]
+DisplayName=%CsAudioIntcsof.SvcDesc%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\csaudiointcsof.sys
+
+[CSAUDIOINTCSOF_Inst.NT.HW]
+AddReg = AUDIOHW.AddReg
+
+[AUDIOHW.AddReg]
+HKR,,DeviceType,0x10001,0x0000001D
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GRGWGX;;;BA)(A;;GRGWGX;;;WD)(A;;GRGWGX;;;RC)"
+
+;======================================================
+; WDF
+;======================================================
+[CSAUDIOINTCSOF_Inst.NT.Wdf]
+KmdfService = CsAudioIntcsof, CSAUDIOINTCSOF_Inst_WdfSect
+[CSAUDIOINTCSOF_Inst_WdfSect]
+KmdfLibraryVersion = 1.33
+
+;======================================================
+; STRINGS
+;======================================================
+[Strings]
+KSNAME_WaveSpeaker="WaveSpeaker"
+KSNAME_TopologySpeaker="TopologySpeaker"
+KSNAME_WaveHeadphones="WaveHeadphones"
+KSNAME_TopologyHeadphones="TopologyHeadphones"
+KSNAME_WaveMicArray1="WaveMicArray1"
+KSNAME_TopologyMicArray1="TopologyMicArray1"
+KSNAME_WaveMicJack="WaveMicJack"
+KSNAME_TopologyMicJack="TopologyMicJack"
+
+Proxy.CLSID="{17CCA71B-ECD7-11D0-B908-00A0C9223196}"
+KSCATEGORY_AUDIO="{6994AD04-93EF-11D0-A3CC-00A0C9223196}"
+KSCATEGORY_RENDER="{65E8773E-8F56-11D0-A3B9-00A0C9223196}"
+KSCATEGORY_CAPTURE="{65E8773D-8F56-11D0-A3B9-00A0C9223196}"
+KSCATEGORY_REALTIME="{EB115FFC-10C8-4964-831D-6DCB02E6F23F}"
+KSCATEGORY_TOPOLOGY="{DDA54A40-1E4C-11D1-A050-405705C10000}"
+
+KSNODETYPE_ANY="{00000000-0000-0000-0000-000000000000}"
+
+PKEY_AudioEndpoint_Association               = "{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},2"
+PKEY_AudioEndpoint_Supports_EventDriven_Mode = "{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},7"
+
+ProviderName = "The Scape Network"
+MfgName      = "The Scape Network"
+
+CSAUDIOINTCSOF.DeviceDesc="Chromebook Intel SOF Audio (WaveRT)"
+CsAudioIntcsof.SvcDesc="Chromebook Intel SOF Audio Service"
+
+CSAUDIOINTCSOF.WaveSpeaker.szPname="Chromebook Speakers"
+CSAUDIOINTCSOF.TopologySpeaker.szPname="Chromebook Speakers"
+CSAUDIOINTCSOF.WaveHeadphones.szPname="Chromebook Headphones"
+CSAUDIOINTCSOF.TopologyHeadphones.szPname="Chromebook Headphones"
+CSAUDIOINTCSOF.WaveMicArray1.szPname="Chromebook Internal Microphone"
+CSAUDIOINTCSOF.TopologyMicArray1.szPname="Chromebook Internal Microphone"
+CSAUDIOINTCSOF.WaveMicJack.szPname="Chromebook Headset Microphone"
+CSAUDIOINTCSOF.TopologyMicJack.szPname="Chromebook Headset Microphone"
