@@ -45,6 +45,10 @@ echo.
 if exist "!ERROR_LOG!" del /f /q "!ERROR_LOG!"
 if exist "!FULL_LOG!" del /f /q "!FULL_LOG!"
 
+:: Ensure firmware files are present in driver package directory for Inf2Cat
+if not exist "%ROOT_DIR%x64\Release\CsAudioIntcsof" mkdir "%ROOT_DIR%x64\Release\CsAudioIntcsof"
+copy /y "%ROOT_DIR%CsAudioIntcsof\sof-*.ri" "%ROOT_DIR%x64\Release\CsAudioIntcsof\" >nul
+
 :: Execute MSBuild with dedicated lightweight file loggers
 "!MSBUILD!" "%ROOT_DIR%ChromebookAudioDrivers.sln" ^
     /p:Configuration=Release ^
@@ -65,7 +69,8 @@ if %BUILD_EXIT% equ 0 (
             "%ROOT_DIR%x64\Release\Nau8825Audio\Nau8825Audio.sys" "%ROOT_DIR%x64\Release\Nau8825Audio\nau8825audio.cat" ^
             "%ROOT_DIR%x64\Release\SklHdaudBus\SklHdaudBus.sys" "%ROOT_DIR%x64\Release\SklHdaudBus\sklhdaudbus.cat" ^
             "%ROOT_DIR%x64\Release\CsAudioIntcsof\CsAudioIntcsof.sys" "%ROOT_DIR%x64\Release\CsAudioIntcsof\csaudiointcsof.cat" ^
-            "%ROOT_DIR%x64\Release\CrosAudioTest.exe" >nul 2>&1
+            "%ROOT_DIR%x64\Release\CrosAudioTest.exe" ^
+            "%ROOT_DIR%x64\Release\csaudioendpointswitcher.exe" >nul 2>&1
         if exist "%ROOT_DIR%TheScapeNetwork.cer" (
             copy /y "%ROOT_DIR%TheScapeNetwork.cer" "%ROOT_DIR%x64\Release\Max98373Audio\TheScapeNetwork.cer" >nul
             copy /y "%ROOT_DIR%TheScapeNetwork.cer" "%ROOT_DIR%x64\Release\Nau8825Audio\TheScapeNetwork.cer" >nul
@@ -96,6 +101,7 @@ if %BUILD_EXIT% equ 0 (
     echo   - x64\Release\CsAudioIntcsof\csaudiointcsof.inf >> "!ERROR_LOG!"
     echo   - x64\Release\CsAudioIntcsof\csaudiointcsof.cat >> "!ERROR_LOG!"
     echo   - x64\Release\CrosAudioTest.exe >> "!ERROR_LOG!"
+    echo   - x64\Release\csaudioendpointswitcher.exe >> "!ERROR_LOG!"
     echo -------------------------------------------------------------------- >> "!ERROR_LOG!"
 
     echo.

@@ -19,6 +19,13 @@ Abstract:
 #include "..\SklHdaudBus\adsp.h"
 #include "..\Common\csaudio_codec.h"
 
+typedef struct _HDAC_BDLENTRY {
+    UINT32 lowAddr;
+    UINT32 highAddr;
+    UINT32 len;
+    UINT32 ioc;
+} HDAC_BDLENTRY, *PHDAC_BDLENTRY;
+
 typedef enum {
     CSAudioEndpointTypeDSP,
     CSAudioEndpointTypeSpeaker,

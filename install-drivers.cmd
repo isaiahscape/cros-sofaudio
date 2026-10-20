@@ -68,10 +68,12 @@ if exist "%BUS_INF%" (
     pnputil /add-driver "%BUS_INF%" /install
 )
 
-if exist "%SOF_INF%" (
-    echo [2/4] Installing Intel Sound Open Firmware WaveRT Driver - CsAudioIntcsof...
-    pnputil /add-driver "%SOF_INF%" /install
+echo [2/4] Installing Intel Sound Open Firmware WaveRT Driver - CsAudioIntcsof...
+copy /y "%~dp0CsAudioIntcsof\sof-*.ri" "%SystemRoot%\System32\drivers\" >nul 2>&1
+if not exist "%SystemRoot%\System32\drivers\sof-tgl.ri" (
+    copy /y "%~dp0x64\Release\CsAudioIntcsof\sof-*.ri" "%SystemRoot%\System32\drivers\" >nul 2>&1
 )
+pnputil /add-driver "%SOF_INF%" /install
 
 echo [3/4] Installing Maxim MAX98373 Smart Amplifier driver...
 pnputil /add-driver "%MAX_INF%" /install
@@ -79,6 +81,26 @@ pnputil /add-driver "%MAX_INF%" /install
 echo.
 echo [4/4] Installing Nuvoton NAU88L25 Headset Codec driver...
 pnputil /add-driver "%NAU_INF%" /install
+
+:: 4. Deploy and start CsAudioEndpointSwitcher service
+echo.
+echo [*] Deploying Chromebook Audio Endpoint Switcher service...
+set SWITCHER_EXE=%~dp0x64\Release\csaudioendpointswitcher.exe
+if not exist "%SWITCHER_EXE%" set SWITCHER_EXE=%~dp0csaudioendpointswitcher.exe
+if exist "%SWITCHER_EXE%" (
+    sc stop csaudioswitcher >nul 2>&1
+    timeout /t 1 /nobreak >nul
+    if not exist "%ProgramFiles%\csaudiointcsof\utils" mkdir "%ProgramFiles%\csaudiointcsof\utils"
+    copy /y "%SWITCHER_EXE%" "%ProgramFiles%\csaudiointcsof\utils\csaudioendpointswitcher.exe" >nul
+    sc query csaudioswitcher >nul 2>&1
+    if %errorLevel% neq 0 (
+        sc create csaudioswitcher binPath= "\"%ProgramFiles%\csaudiointcsof\utils\csaudioendpointswitcher.exe\"" start= auto DisplayName= "csaudioswitcher" >nul
+    ) else (
+        sc config csaudioswitcher binPath= "\"%ProgramFiles%\csaudiointcsof\utils\csaudioendpointswitcher.exe\"" start= auto >nul
+    )
+    sc start csaudioswitcher >nul 2>&1
+    echo [OK] Switcher service installed and running.
+)
 
 :: 4. Check hardware status
 echo.

@@ -92,7 +92,7 @@ KSJACK_DESCRIPTION HeadphoneJackDescBridge =
     eGeoLocRight,
     eGenLocPrimaryBox,
     ePortConnJack,
-    TRUE
+    FALSE
 };
 
 // Only return a KSJACK_DESCRIPTION for the physical bridge pin.

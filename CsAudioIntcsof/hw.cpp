@@ -175,7 +175,6 @@ NTSTATUS CCsAudioSofHW::sof_hw_params(eDeviceType deviceType)
 
 NTSTATUS CCsAudioSofHW::sof_program_dma(eDeviceType deviceType, PMDL mdl, IPortWaveRTStream* stream)
 {
-    UNREFERENCED_PARAMETER(mdl);
     UNREFERENCED_PARAMETER(stream);
 
     if (!m_BusInterfaceValid) {
@@ -188,6 +187,11 @@ NTSTATUS CCsAudioSofHW::sof_program_dma(eDeviceType deviceType, PMDL mdl, IPortW
     streamFormat.NumberOfChannels = 2;
     streamFormat.ValidBitsPerSample = 16;
     streamFormat.ContainerSize = 16;
+
+    ULONG totalBytes = mdl ? MmGetMdlByteCount(mdl) : DMA_BUFFER_SIZE;
+    if (totalBytes == 0) totalBytes = DMA_BUFFER_SIZE;
+    int numBlocks = (int)(totalBytes / BDL_BLOCK_SIZE);
+    if (numBlocks <= 0) numBlocks = 1;
 
     if (deviceType == eSpeakerDevice || deviceType == eHeadphoneDevice) {
         if (!m_hRenderStream && m_BusInterface.GetRenderStream) {
@@ -204,14 +208,45 @@ NTSTATUS CCsAudioSofHW::sof_program_dma(eDeviceType deviceType, PMDL mdl, IPortW
 
         if (m_hRenderStream && m_BusInterface.PrepareDSP) {
             PVOID bdlBuf = NULL;
-            int numBlocks = DMA_BUFFER_SIZE / BDL_BLOCK_SIZE;
-            return m_BusInterface.PrepareDSP(
+            NTSTATUS status = m_BusInterface.PrepareDSP(
                 m_BusInterface.Context,
                 m_hRenderStream,
-                DMA_BUFFER_SIZE,
+                totalBytes,
                 numBlocks,
                 &bdlBuf
             );
+            if (!NT_SUCCESS(status)) {
+                return status;
+            }
+
+            if (bdlBuf && mdl) {
+                PHDAC_BDLENTRY bdl = (PHDAC_BDLENTRY)bdlBuf;
+                PPFN_NUMBER pfnArray = MmGetMdlPfnArray(mdl);
+                ULONG remaining = totalBytes;
+                ULONG offset = 0;
+                ULONG pageIndex = 0;
+
+                for (int i = 0; i < numBlocks && remaining > 0; i++) {
+                    ULONG pageOff = offset % PAGE_SIZE;
+                    ULONG chunk = (pageOff == 0) ? PAGE_SIZE : (PAGE_SIZE - pageOff);
+                    if (chunk > remaining) chunk = remaining;
+                    if (chunk > BDL_BLOCK_SIZE) chunk = BDL_BLOCK_SIZE;
+
+                    PFN_NUMBER pfn = pfnArray[pageIndex];
+                    PHYSICAL_ADDRESS addr;
+                    addr.QuadPart = (LONGLONG)pfn << PAGE_SHIFT;
+
+                    bdl[i].lowAddr = addr.LowPart + pageOff;
+                    bdl[i].highAddr = addr.HighPart;
+                    bdl[i].len = chunk;
+                    remaining -= chunk;
+                    offset += chunk;
+                    if ((offset % PAGE_SIZE) == 0) pageIndex++;
+
+                    bdl[i].ioc = (remaining == 0 || remaining == totalBytes / 2) ? 1 : 0;
+                }
+            }
+            return STATUS_SUCCESS;
         }
     } else if (deviceType == eMicArrayDevice1 || deviceType == eMicJackDevice) {
         if (!m_hCaptureStream && m_BusInterface.GetCaptureStream) {
@@ -228,14 +263,45 @@ NTSTATUS CCsAudioSofHW::sof_program_dma(eDeviceType deviceType, PMDL mdl, IPortW
 
         if (m_hCaptureStream && m_BusInterface.PrepareDSP) {
             PVOID bdlBuf = NULL;
-            int numBlocks = DMA_BUFFER_SIZE / BDL_BLOCK_SIZE;
-            return m_BusInterface.PrepareDSP(
+            NTSTATUS status = m_BusInterface.PrepareDSP(
                 m_BusInterface.Context,
                 m_hCaptureStream,
-                DMA_BUFFER_SIZE,
+                totalBytes,
                 numBlocks,
                 &bdlBuf
             );
+            if (!NT_SUCCESS(status)) {
+                return status;
+            }
+
+            if (bdlBuf && mdl) {
+                PHDAC_BDLENTRY bdl = (PHDAC_BDLENTRY)bdlBuf;
+                PPFN_NUMBER pfnArray = MmGetMdlPfnArray(mdl);
+                ULONG remaining = totalBytes;
+                ULONG offset = 0;
+                ULONG pageIndex = 0;
+
+                for (int i = 0; i < numBlocks && remaining > 0; i++) {
+                    ULONG pageOff = offset % PAGE_SIZE;
+                    ULONG chunk = (pageOff == 0) ? PAGE_SIZE : (PAGE_SIZE - pageOff);
+                    if (chunk > remaining) chunk = remaining;
+                    if (chunk > BDL_BLOCK_SIZE) chunk = BDL_BLOCK_SIZE;
+
+                    PFN_NUMBER pfn = pfnArray[pageIndex];
+                    PHYSICAL_ADDRESS addr;
+                    addr.QuadPart = (LONGLONG)pfn << PAGE_SHIFT;
+
+                    bdl[i].lowAddr = addr.LowPart + pageOff;
+                    bdl[i].highAddr = addr.HighPart;
+                    bdl[i].len = chunk;
+                    remaining -= chunk;
+                    offset += chunk;
+                    if ((offset % PAGE_SIZE) == 0) pageIndex++;
+
+                    bdl[i].ioc = (remaining == 0 || remaining == totalBytes / 2) ? 1 : 0;
+                }
+            }
+            return STATUS_SUCCESS;
         }
     }
 

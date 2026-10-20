@@ -429,8 +429,14 @@ Max98373_InitializeHardware(
     /* Step 8: Auto restart configuration */
     I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FE_DEVICE_AUTO_RESTART_CFG, 0x01);
 
+    /* Step 9: Power up chip and enable speaker amplifier stage */
+    Max98373_SetPowerState(DevCtx, TRUE);
+    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, MAX98373_AMP_ENABLE);
+    Max98373_SetVolume(DevCtx, DevCtx->VolumeDb, FALSE);
+    DevCtx->Streaming = TRUE;
+
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-        "Max98373Audio: Hardware initialization complete\n"));
+        "Max98373Audio: Hardware initialization complete (Amp Powered On)\n"));
 
     return STATUS_SUCCESS;
 }

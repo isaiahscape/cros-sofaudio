@@ -188,51 +188,55 @@ static NTSTATUS SendIoctlToDeviceInterface(
         return STATUS_DEVICE_NOT_CONNECTED;
     }
 
-    UNICODE_STRING symLink;
-    RtlInitUnicodeString(&symLink, symbolicLinkList);
+    NTSTATUS overallStatus = STATUS_DEVICE_NOT_CONNECTED;
+    for (PWSTR symLinkStr = symbolicLinkList; *symLinkStr; symLinkStr += wcslen(symLinkStr) + 1) {
+        UNICODE_STRING symLink;
+        RtlInitUnicodeString(&symLink, symLinkStr);
 
-    PFILE_OBJECT fileObject = NULL;
-    PDEVICE_OBJECT targetDevice = NULL;
+        PFILE_OBJECT fileObject = NULL;
+        PDEVICE_OBJECT targetDevice = NULL;
 
-    status = IoGetDeviceObjectPointer(
-        &symLink,
-        FILE_READ_DATA | FILE_WRITE_DATA,
-        &fileObject,
-        &targetDevice
-    );
-
-    if (NT_SUCCESS(status) && targetDevice) {
-        IO_STATUS_BLOCK ioStatus;
-        KEVENT event;
-        KeInitializeEvent(&event, NotificationEvent, FALSE);
-
-        PIRP irp = IoBuildDeviceIoControlRequest(
-            IoControlCode,
-            targetDevice,
-            InputBuffer,
-            InputBufferLength,
-            OutputBuffer,
-            OutputBufferLength,
-            FALSE,
-            &event,
-            &ioStatus
+        status = IoGetDeviceObjectPointer(
+            &symLink,
+            FILE_READ_DATA | FILE_WRITE_DATA,
+            &fileObject,
+            &targetDevice
         );
 
-        if (irp) {
-            status = IoCallDriver(targetDevice, irp);
-            if (status == STATUS_PENDING) {
-                KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
-                status = ioStatus.Status;
-            }
-        } else {
-            status = STATUS_INSUFFICIENT_RESOURCES;
-        }
+        if (NT_SUCCESS(status) && targetDevice) {
+            IO_STATUS_BLOCK ioStatus;
+            KEVENT event;
+            KeInitializeEvent(&event, NotificationEvent, FALSE);
 
-        ObDereferenceObject(fileObject);
+            PIRP irp = IoBuildDeviceIoControlRequest(
+                IoControlCode,
+                targetDevice,
+                InputBuffer,
+                InputBufferLength,
+                OutputBuffer,
+                OutputBufferLength,
+                FALSE,
+                &event,
+                &ioStatus
+            );
+
+            if (irp) {
+                status = IoCallDriver(targetDevice, irp);
+                if (status == STATUS_PENDING) {
+                    KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
+                    status = ioStatus.Status;
+                }
+            } else {
+                status = STATUS_INSUFFICIENT_RESOURCES;
+            }
+
+            ObDereferenceObject(fileObject);
+            overallStatus = status;
+        }
     }
 
     ExFreePool(symbolicLinkList);
-    return status;
+    return overallStatus;
 }
 
 void CCsAudioSofHW::NotifySidecarCodec(CSAudioEndpointType endpoint, BOOL start)

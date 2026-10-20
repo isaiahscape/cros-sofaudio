@@ -3,7 +3,7 @@ Signature   = "$Windows NT$"
 Class       = MEDIA
 Provider    = %ProviderName%
 ClassGUID   = {4d36e96c-e325-11ce-bfc1-08002be10318}
-DriverVer   = 10/20/2026, 1.0.0.1
+DriverVer   = 10/20/2026, 1.1.1.0
 CatalogFile = csaudiointcsof.cat
 PnpLockDown = 1
 
@@ -12,6 +12,11 @@ PnpLockDown = 1
 
 [SourceDisksFiles]
 csaudiointcsof.sys=222
+sof-apl.ri=222
+sof-glk.ri=222
+sof-cnl.ri=222
+sof-jsl.ri=222
+sof-tgl.ri=222
 
 [SignatureAttributes]
 csaudiointcsof.sys=SignatureAttributes.DRM
@@ -47,6 +52,11 @@ CSAUDIOINTCSOF_Inst.CopyList=12
 
 [CSAUDIOINTCSOF_Inst.CopyList]
 csaudiointcsof.sys
+sof-apl.ri
+sof-glk.ri
+sof-cnl.ri
+sof-jsl.ri
+sof-tgl.ri
 
 [CSAUDIOINTCSOF_Inst.AddReg]
 HKR,,AssociatedFilters,,"wdmaud,swmidi,redbook"

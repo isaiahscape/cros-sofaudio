@@ -71,3 +71,16 @@ This utility will:
    * Plug in a smartphone headset -> Displays `CONNECTED: TRRS 4-Pole Headset with Microphone`.
    * Unplug -> Displays `UNPLUGGED`.
 3. Test speaker and headphone DAC stream powering and pop-free volume ramping.
+
+---
+
+### 5. Uninstallation
+
+If you ever need to uninstall the drivers and restore Windows default audio drivers:
+1. Right-click `uninstall-drivers.cmd` and select **Run as administrator**.
+2. The script will:
+   * Stop and remove the `csaudioswitcher` background service.
+   * Remove all installed SOF driver packages (`csaudiointcsof`, `max98373audio`, `nau8825audio`, `sklhdaudbus`) from the Windows Driver Store via `pnputil /delete-driver /uninstall /force`.
+   * Clean up firmware files (`sof-*.ri`) from `C:\Windows\System32\drivers\`.
+   * Rescan hardware devices to let Windows reload fallback drivers.
+3. Reboot your system.

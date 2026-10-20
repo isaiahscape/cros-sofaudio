@@ -12,6 +12,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SklHdaudBus", "SklHdaudBus\
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CsAudioIntcsof", "CsAudioIntcsof\CsAudioIntcsof.vcxproj", "{836BA6D1-3FF7-4411-8BCD-469553452DCF}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CsAudioEndpointSwitcher", "CsAudioEndpointSwitcher\CsAudioEndpointSwitcher.vcxproj", "{9E25A001-A120-4E1F-B882-C705A0D10002}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -38,6 +40,10 @@ Global
 		{836BA6D1-3FF7-4411-8BCD-469553452DCF}.Debug|x64.Build.0 = Debug|x64
 		{836BA6D1-3FF7-4411-8BCD-469553452DCF}.Release|x64.ActiveCfg = Release|x64
 		{836BA6D1-3FF7-4411-8BCD-469553452DCF}.Release|x64.Build.0 = Release|x64
+		{9E25A001-A120-4E1F-B882-C705A0D10002}.Debug|x64.ActiveCfg = Debug|x64
+		{9E25A001-A120-4E1F-B882-C705A0D10002}.Debug|x64.Build.0 = Debug|x64
+		{9E25A001-A120-4E1F-B882-C705A0D10002}.Release|x64.ActiveCfg = Release|x64
+		{9E25A001-A120-4E1F-B882-C705A0D10002}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

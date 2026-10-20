@@ -94,7 +94,7 @@ KSJACK_DESCRIPTION MicJackDesc =
     eGeoLocRight,
     eGenLocPrimaryBox,
     ePortConnJack,
-    TRUE               // NOTE: For convenience, wired headset jacks will be "unplugged" at boot.
+    FALSE               // NOTE: For convenience, wired headset jacks will be "unplugged" at boot.
 };
 
 //=============================================================================

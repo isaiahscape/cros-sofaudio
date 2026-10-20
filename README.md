@@ -67,11 +67,12 @@ On modern Chromebooks running coreboot / UEFI firmware (such as MrChromebox UEFI
 
 ## Quick Installation
 
-1. Download the latest `cros-sofaudio-v1.1.0.zip` from the [Releases](https://github.com/isaiahscape/cros-sofaudio/releases) page.
+1. Download the latest `cros-sofaudio-v1.1.1.zip` from the [Releases](https://github.com/isaiahscape/cros-sofaudio/releases) page.
 2. Extract the ZIP archive on your Chromebook.
 3. Right-click **`install-drivers.cmd`** and select **Run as administrator**.
    * It will self-elevate, install the security certificate to the Windows Trusted Certificate store, and install the complete driver stack (`SklHdaudBus`, `CsAudioIntcsof`, `Max98373Audio`, `Nau8825Audio`) via `pnputil`.
 4. (Optional) Run `cros_audio_test.exe` to inspect live hardware registers and monitor jack plug/unplug events.
+5. **To uninstall:** Right-click **`uninstall-drivers.cmd`** and select **Run as administrator** to remove all drivers, the switcher service, and DSP firmware.
 
 ---
 
