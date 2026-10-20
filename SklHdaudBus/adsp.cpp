@@ -363,7 +363,11 @@ UINT32 ADSPStreamPosition(_In_ PVOID _context, _In_ HANDLE Handle) {
 		return 0;
 	}
 
-	return *stream->posbuf;
+	if (stream->posbuf && *stream->posbuf != 0) {
+		return *stream->posbuf;
+	}
+
+	return stream_read32(stream, SD_LPIB);
 }
 
 ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {

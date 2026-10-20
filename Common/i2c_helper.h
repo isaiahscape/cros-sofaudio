@@ -15,13 +15,7 @@
 #include <spb.h>
 #include <reshub.h>
 
-/* Helper macro to build SPB sequence descriptors */
-#ifndef SPB_TRANSFER_LIST_INIT
-#define SPB_TRANSFER_LIST_INIT(pSeq, cTransfers) \
-    RtlZeroMemory((pSeq), SPB_TRANSFER_LIST_SIZE(cTransfers)); \
-    (pSeq)->Size = SPB_TRANSFER_LIST_SIZE(cTransfers); \
-    (pSeq)->TransfersCount = (cTransfers);
-#endif
+
 
 /*
  * I2cWriteRegister8 - Write 8-bit value to a 16-bit register address
@@ -79,13 +73,8 @@ I2cReadRegister8(
     UINT8 addrBuf[2];
     UINT8 dataBuf[1];
 
-    struct {
-        SPB_TRANSFER_LIST List;
-        SPB_TRANSFER_LIST_ENTRY ExtraEntries[1]; /* Total 2 transfers */
-    } sequence;
-
+    SPB_TRANSFER_LIST_AND_ENTRIES(2) sequence;
     WDF_MEMORY_DESCRIPTOR inputDesc;
-    WDF_MEMORY_DESCRIPTOR outputDesc;
 
     if (!Value) return STATUS_INVALID_PARAMETER;
     *Value = 0;
@@ -93,9 +82,7 @@ I2cReadRegister8(
     addrBuf[0] = (UINT8)((Register >> 8) & 0xFF);
     addrBuf[1] = (UINT8)(Register & 0xFF);
 
-    RtlZeroMemory(&sequence, sizeof(sequence));
-    sequence.List.Size = sizeof(sequence);
-    sequence.List.TransferCount = 2;
+    SPB_TRANSFER_LIST_INIT(&(sequence.List), 2);
 
     /* Transfer 1: Write register address */
     sequence.List.Transfers[0] = SPB_TRANSFER_LIST_ENTRY_INIT_SIMPLE(
@@ -114,14 +101,13 @@ I2cReadRegister8(
     );
 
     WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&inputDesc, &sequence, sizeof(sequence));
-    WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&outputDesc, dataBuf, sizeof(dataBuf));
 
     status = WdfIoTargetSendIoctlSynchronously(
         SpbTarget,
         NULL,
         IOCTL_SPB_EXECUTE_SEQUENCE,
         &inputDesc,
-        &outputDesc,
+        NULL,
         NULL,
         NULL
     );
@@ -190,13 +176,8 @@ I2cReadRegister16(
     UINT8 addrBuf[2];
     UINT8 dataBuf[2];
 
-    struct {
-        SPB_TRANSFER_LIST List;
-        SPB_TRANSFER_LIST_ENTRY ExtraEntries[1]; /* Total 2 transfers */
-    } sequence;
-
+    SPB_TRANSFER_LIST_AND_ENTRIES(2) sequence;
     WDF_MEMORY_DESCRIPTOR inputDesc;
-    WDF_MEMORY_DESCRIPTOR outputDesc;
 
     if (!Value) return STATUS_INVALID_PARAMETER;
     *Value = 0;
@@ -204,9 +185,7 @@ I2cReadRegister16(
     addrBuf[0] = (UINT8)((Register >> 8) & 0xFF);
     addrBuf[1] = (UINT8)(Register & 0xFF);
 
-    RtlZeroMemory(&sequence, sizeof(sequence));
-    sequence.List.Size = sizeof(sequence);
-    sequence.List.TransferCount = 2;
+    SPB_TRANSFER_LIST_INIT(&(sequence.List), 2);
 
     /* Transfer 1: Write register address */
     sequence.List.Transfers[0] = SPB_TRANSFER_LIST_ENTRY_INIT_SIMPLE(
@@ -225,14 +204,13 @@ I2cReadRegister16(
     );
 
     WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&inputDesc, &sequence, sizeof(sequence));
-    WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&outputDesc, dataBuf, sizeof(dataBuf));
 
     status = WdfIoTargetSendIoctlSynchronously(
         SpbTarget,
         NULL,
         IOCTL_SPB_EXECUTE_SEQUENCE,
         &inputDesc,
-        &outputDesc,
+        NULL,
         NULL,
         NULL
     );

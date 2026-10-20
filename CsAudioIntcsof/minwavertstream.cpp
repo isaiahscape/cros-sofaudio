@@ -343,10 +343,45 @@ NTSTATUS CMiniportWaveRTStream::GetPosition
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_PositionSpinLock, &oldIrql);
 
-    UINT64 linearPos;
+    UINT64 linearPos = 0;
     m_pMiniport->CurrentPosition(NULL, &linearPos);
-    Position_->PlayOffset = linearPos;
-    Position_->WriteOffset = linearPos/* + FIFO_SIZE*/;
+
+    if (m_KsState == KSSTATE_RUN)
+    {
+        if (linearPos > 0 && m_ulDmaBufferSize > 0)
+        {
+            Position_->PlayOffset = linearPos % m_ulDmaBufferSize;
+            Position_->WriteOffset = Position_->PlayOffset;
+        }
+        else
+        {
+            // Fallback monotonic clock based on QPC time to ensure WASAPI audio clock never stalls
+            LARGE_INTEGER now = KeQueryPerformanceCounter(NULL);
+            if (m_llQpcFrequency.QuadPart > 0 && m_pWfExt != NULL && m_ulDmaBufferSize > 0)
+            {
+                LONGLONG elapsedQpc = now.QuadPart - m_llStartTime.QuadPart;
+                if (elapsedQpc < 0) elapsedQpc = 0;
+
+                ULONGLONG sampleRate = m_pWfExt->Format.nSamplesPerSec;
+                ULONGLONG blockAlign = m_pWfExt->Format.nBlockAlign;
+                ULONGLONG elapsedBytes = ((ULONGLONG)elapsedQpc * sampleRate * blockAlign) / (ULONGLONG)m_llQpcFrequency.QuadPart;
+
+                ULONG bufferOffset = (ULONG)(elapsedBytes % m_ulDmaBufferSize);
+                Position_->PlayOffset = bufferOffset;
+                Position_->WriteOffset = bufferOffset;
+            }
+            else
+            {
+                Position_->PlayOffset = 0;
+                Position_->WriteOffset = 0;
+            }
+        }
+    }
+    else
+    {
+        Position_->PlayOffset = m_lastLinearPos;
+        Position_->WriteOffset = m_lastLinearPos;
+    }
 
     KeReleaseSpinLock(&m_PositionSpinLock, oldIrql);
 
@@ -377,6 +412,9 @@ NTSTATUS CMiniportWaveRTStream::SetState
             KeAcquireSpinLock(&m_PositionSpinLock, &oldIrql);
 
             m_pMiniport->StopDMA();
+            m_llStartTime.QuadPart = 0;
+            m_lastLinearPos = 0;
+
             if (!NT_SUCCESS(ntStatus)) {
                 return ntStatus;
             }
@@ -408,6 +446,7 @@ NTSTATUS CMiniportWaveRTStream::SetState
                 return ntStatus;
             }
 
+            m_llStartTime = KeQueryPerformanceCounter(&m_llQpcFrequency);
             break;
     }
 

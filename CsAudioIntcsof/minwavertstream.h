@@ -79,7 +79,8 @@ protected:
     KSPIN_LOCK                  m_PositionSpinLock;
     UINT32                      m_lastLinkPos;
     UINT64                      m_lastLinearPos;
-    
+    LARGE_INTEGER               m_llStartTime;
+    LARGE_INTEGER               m_llQpcFrequency;
 };
 typedef CMiniportWaveRTStream *PCMiniportWaveRTStream;
 #endif // _CSAUDIOACP3X_MINWAVERTSTREAM_H_

@@ -22,20 +22,20 @@ echo.
 set CERTPATH=%~dp0TheScapeNetwork.cer
 if not exist "%CERTPATH%" set CERTPATH=%~dp0x64\Release\TheScapeNetwork.cer
 
-set BUS_INF=%~dp0SklHdaudBus\sklhdaudbus.inf
-if not exist "%BUS_INF%" set BUS_INF=%~dp0x64\Release\SklHdaudBus\sklhdaudbus.inf
+set BUS_INF=%~dp0x64\Release\SklHdaudBus\sklhdaudbus.inf
+if not exist "%BUS_INF%" set BUS_INF=%~dp0SklHdaudBus\sklhdaudbus.inf
 if not exist "%BUS_INF%" set BUS_INF=%~dp0x64\Release\sklhdaudbus.inf
 
-set SOF_INF=%~dp0CsAudioIntcsof\csaudiointcsof.inf
-if not exist "%SOF_INF%" set SOF_INF=%~dp0x64\Release\CsAudioIntcsof\csaudiointcsof.inf
+set SOF_INF=%~dp0x64\Release\CsAudioIntcsof\csaudiointcsof.inf
+if not exist "%SOF_INF%" set SOF_INF=%~dp0CsAudioIntcsof\csaudiointcsof.inf
 if not exist "%SOF_INF%" set SOF_INF=%~dp0x64\Release\csaudiointcsof.inf
 
-set MAX_INF=%~dp0Max98373Audio\Max98373Audio.inf
-if not exist "%MAX_INF%" set MAX_INF=%~dp0x64\Release\Max98373Audio\Max98373Audio.inf
+set MAX_INF=%~dp0x64\Release\Max98373Audio\Max98373Audio.inf
+if not exist "%MAX_INF%" set MAX_INF=%~dp0Max98373Audio\Max98373Audio.inf
 if not exist "%MAX_INF%" set MAX_INF=%~dp0x64\Release\Max98373Audio.inf
 
-set NAU_INF=%~dp0Nau8825Audio\Nau8825Audio.inf
-if not exist "%NAU_INF%" set NAU_INF=%~dp0x64\Release\Nau8825Audio\Nau8825Audio.inf
+set NAU_INF=%~dp0x64\Release\Nau8825Audio\Nau8825Audio.inf
+if not exist "%NAU_INF%" set NAU_INF=%~dp0Nau8825Audio\Nau8825Audio.inf
 if not exist "%NAU_INF%" set NAU_INF=%~dp0x64\Release\Nau8825Audio.inf
 
 if not exist "%MAX_INF%" (

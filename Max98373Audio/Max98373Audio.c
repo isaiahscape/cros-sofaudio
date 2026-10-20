@@ -240,8 +240,29 @@ Max98373_EvtPrepareHardware(
         }
     }
 
+    /* Detect Left vs Right speaker channel role from ACPI instance name */
+    {
+        WDFMEMORY pdoMem = NULL;
+        if (NT_SUCCESS(WdfDeviceAllocAndQueryProperty(
+                Device,
+                DevicePropertyPhysicalDeviceObjectName,
+                PagedPool,
+                WDF_NO_OBJECT_ATTRIBUTES,
+                &pdoMem))) {
+            PWSTR pdoName = (PWSTR)WdfMemoryGetBuffer(pdoMem, NULL);
+            if (pdoName) {
+                if (wcsstr(pdoName, L"MAXR") || wcsstr(pdoName, L"\\0")) {
+                    devCtx->SpeakerRole = SPEAKER_ROLE_RIGHT;
+                } else if (wcsstr(pdoName, L"MAXL") || wcsstr(pdoName, L"\\1")) {
+                    devCtx->SpeakerRole = SPEAKER_ROLE_LEFT;
+                }
+            }
+            WdfObjectDelete(pdoMem);
+        }
+    }
+
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-        "Max98373Audio: I2C target opened successfully\n"));
+        "Max98373Audio: I2C target opened successfully (SpeakerRole=%d)\n", devCtx->SpeakerRole));
 
     return STATUS_SUCCESS;
 }
@@ -405,17 +426,17 @@ Max98373_InitializeHardware(
     I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2028_PCM_SR_SETUP_2, 0x88);
 
     /* Step 5: Speaker Path & Channel Mapping */
-    /* Enable PCM Rx channel */
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x01);
+    /* Enable PCM Rx channels 0 & 1 (Left and Right) */
+    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x03);
 
-    /* Speaker source: Mono Mix or Left/Right according to SpeakerRole */
+    /* Speaker source: 0x01 = Left, 0x02 = Right, 0x03 = Mono Mix (0x00 is None / Disconnected) */
     if (DevCtx->SpeakerRole == SPEAKER_ROLE_RIGHT) {
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x01); /* Ch 1 (Right) */
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x02); /* Right channel */
     } else if (DevCtx->SpeakerRole == SPEAKER_ROLE_LEFT) {
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x00); /* Ch 0 (Left) */
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x01); /* Left channel */
     } else {
-        /* Stereo or Mono combined */
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x00);
+        /* Stereo / fallback: mix Left + Right so both speakers play */
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x03);
     }
 
     /* Step 6: Amplifier Path Gain & Digital Volume Control */

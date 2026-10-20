@@ -182,7 +182,7 @@ NTSTATUS StartHDAController(PFDO_CONTEXT fdoCtx) {
 	{
 	//Program position buffer
 	PHYSICAL_ADDRESS posbufAddr = MmGetPhysicalAddress(fdoCtx->posbuf);
-	hda_write32(fdoCtx, DPLBASE, posbufAddr.LowPart);
+	hda_write32(fdoCtx, DPLBASE, posbufAddr.LowPart | HDA_DPLBASE_ENABLE);
 	hda_write32(fdoCtx, DPUBASE, posbufAddr.HighPart);
 	}
 
