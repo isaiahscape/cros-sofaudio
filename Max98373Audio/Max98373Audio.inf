@@ -1,0 +1,69 @@
+;
+; Max98373Audio.inf
+;
+; Maxim MAX98373 Smart Amplifier Driver for Windows 11
+; Chromebook Sound Open Firmware (SOF) Audio Subsystem
+;
+; Copyright (c) 2026. Licensed under the MIT License.
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = MEDIA
+ClassGuid   = {4d36e96c-e325-11ce-bfc1-08002be10318}
+Provider    = %ProviderString%
+CatalogFile = Max98373Audio.cat
+DriverVer   = 10/20/2026,1.0.0.1
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+Max98373Audio.sys = 1,,
+
+; ================= Class Installation =================
+
+[Manufacturer]
+%ManufacturerString% = Standard,NTamd64.10.0...16299
+
+[Standard.NTamd64.10.0...16299]
+%Max98373.DeviceDesc% = Max98373_Device, ACPI\MX98373
+%Max98373.DeviceDesc% = Max98373_Device, ACPI\MAX98373
+
+; ================= Device Installation =================
+
+[Max98373_Device.NT]
+CopyFiles = Max98373_Device.NT.CopyFiles
+
+[Max98373_Device.NT.CopyFiles]
+Max98373Audio.sys
+
+[Max98373_Device.NT.Services]
+AddService = Max98373Audio, 0x00000002, Max98373_Service_Inst
+
+[Max98373_Service_Inst]
+DisplayName    = %Max98373.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %13%\Max98373Audio.sys
+LoadOrderGroup = Extended Base
+
+[Max98373_Device.NT.Wdf]
+KmdfService = Max98373Audio, Max98373_wdfsect
+
+[Max98373_wdfsect]
+KmdfLibraryVersion = 1.33
+
+; ================= Strings =================
+
+[Strings]
+ProviderString      = "Chromebook Audio Open Source Project"
+ManufacturerString  = "Maxim Integrated / Chrultrabook"
+DiskName            = "MAX98373 Audio Installation Disk"
+Max98373.DeviceDesc = "Maxim Integrated MAX98373 Smart Audio Amplifier"
+Max98373.SVCDESC    = "Maxim MAX98373 Audio Driver Service"

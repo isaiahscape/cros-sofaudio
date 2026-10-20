@@ -1,0 +1,70 @@
+;
+; Nau8825Audio.inf
+;
+; Nuvoton NAU88L25 Audio Codec & Jack Detection Driver for Windows 11
+; Chromebook Sound Open Firmware (SOF) Audio Subsystem
+;
+; Copyright (c) 2026. Licensed under the MIT License.
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = MEDIA
+ClassGuid   = {4d36e96c-e325-11ce-bfc1-08002be10318}
+Provider    = %ProviderString%
+CatalogFile = Nau8825Audio.cat
+DriverVer   = 10/20/2026,1.0.0.1
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+Nau8825Audio.sys = 1,,
+
+; ================= Class Installation =================
+
+[Manufacturer]
+%ManufacturerString% = Standard,NTamd64.10.0...16299
+
+[Standard.NTamd64.10.0...16299]
+%Nau8825.DeviceDesc% = Nau8825_Device, ACPI\10508825
+%Nau8825.DeviceDesc% = Nau8825_Device, ACPI\NVTN2000
+%Nau8825.DeviceDesc% = Nau8825_Device, ACPI\NAU8825
+
+; ================= Device Installation =================
+
+[Nau8825_Device.NT]
+CopyFiles = Nau8825_Device.NT.CopyFiles
+
+[Nau8825_Device.NT.CopyFiles]
+Nau8825Audio.sys
+
+[Nau8825_Device.NT.Services]
+AddService = Nau8825Audio, 0x00000002, Nau8825_Service_Inst
+
+[Nau8825_Service_Inst]
+DisplayName    = %Nau8825.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %13%\Nau8825Audio.sys
+LoadOrderGroup = Extended Base
+
+[Nau8825_Device.NT.Wdf]
+KmdfService = Nau8825Audio, Nau8825_wdfsect
+
+[Nau8825_wdfsect]
+KmdfLibraryVersion = 1.33
+
+; ================= Strings =================
+
+[Strings]
+ProviderString      = "Chromebook Audio Open Source Project"
+ManufacturerString  = "Nuvoton Technology / Chrultrabook"
+DiskName            = "NAU88L25 Audio Installation Disk"
+Nau8825.DeviceDesc  = "Nuvoton NAU88L25 Headset Audio Codec & Jack Detect"
+Nau8825.SVCDESC     = "Nuvoton NAU8825 Audio Driver Service"

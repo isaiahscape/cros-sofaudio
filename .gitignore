@@ -1,0 +1,48 @@
+# =========================================================================
+# .gitignore — Chromebook SOF Audio Drivers for Windows 11 (cros-sofaudio)
+# =========================================================================
+
+# Build Outputs & Binaries
+x64/
+x86/
+[Dd]ebug/
+[Rr]elease/
+[Aa]rm64/
+[Bb]in/
+[Oo]bj/
+*.sys
+*.cat
+*.exe
+*.pdb
+*.obj
+*.tlog
+*.idb
+*.lastbuildstate
+*.iobj
+*.ipdb
+*.ipch
+
+# Archives / Release bundles
+*.zip
+*.7z
+*.tar.gz
+
+# Signing & Certificate files
+*.cer
+*.pfx
+*.p7b
+*.key
+*.csr
+
+# Logs
+*.log
+build_full.log
+build_errors.log
+
+# Visual Studio / MSBuild temporary files
+.vs/
+*.user
+*.suo
+*.VC.db
+*.opendb
+msbuild.binlog

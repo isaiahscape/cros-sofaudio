@@ -1,0 +1,33 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Max98373Audio", "Max98373Audio\Max98373Audio.vcxproj", "{A89746A1-9837-4D21-B457-3C98373E0001}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Nau8825Audio", "Nau8825Audio\Nau8825Audio.vcxproj", "{88250001-8825-4B88-A882-8825NAU88L25}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CrosAudioTest", "CrosAudioTest\CrosAudioTest.vcxproj", "{4637B001-A120-4E1F-A882-C705A0D10001}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A89746A1-9837-4D21-B457-3C98373E0001}.Debug|x64.ActiveCfg = Debug|x64
+		{A89746A1-9837-4D21-B457-3C98373E0001}.Debug|x64.Build.0 = Debug|x64
+		{A89746A1-9837-4D21-B457-3C98373E0001}.Release|x64.ActiveCfg = Release|x64
+		{A89746A1-9837-4D21-B457-3C98373E0001}.Release|x64.Build.0 = Release|x64
+		{88250001-8825-4B88-A882-8825NAU88L25}.Debug|x64.ActiveCfg = Debug|x64
+		{88250001-8825-4B88-A882-8825NAU88L25}.Debug|x64.Build.0 = Debug|x64
+		{88250001-8825-4B88-A882-8825NAU88L25}.Release|x64.ActiveCfg = Release|x64
+		{88250001-8825-4B88-A882-8825NAU88L25}.Release|x64.Build.0 = Release|x64
+		{4637B001-A120-4E1F-A882-C705A0D10001}.Debug|x64.ActiveCfg = Debug|x64
+		{4637B001-A120-4E1F-A882-C705A0D10001}.Debug|x64.Build.0 = Debug|x64
+		{4637B001-A120-4E1F-A882-C705A0D10001}.Release|x64.ActiveCfg = Release|x64
+		{4637B001-A120-4E1F-A882-C705A0D10001}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
