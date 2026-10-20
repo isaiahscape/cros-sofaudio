@@ -426,9 +426,10 @@ Nau8825_InitializeHardware(
     /* Step 3: Configure Clocks & PLL/FLL */
     Nau8825_ConfigureClocks(DevCtx);
 
-    /* Step 4: Digital Audio Interface (I2S standard, 24/32-bit slot, slave mode) */
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL1, 0x000B);
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL2, 0x8010);
+    /* Step 4: Digital Audio Interface (I2S standard, 32-bit slot, slave mode, tristate disabled) */
+    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL1,
+                       NAU8825_I2S_DL_32 | NAU8825_I2S_DF_I2S);
+    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL2, 0x0010);
 
     /* Step 5: Power Control & DAC/ADC Enable */
     /* Enable DACL/DACR, ADC, clock gating */
@@ -551,6 +552,11 @@ Nau8825_SetPlaybackState(
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
     if (Enable) {
+        /* Ensure DAI format is 32-bit I2S and tristate is disabled */
+        I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL1,
+                           NAU8825_I2S_DL_32 | NAU8825_I2S_DF_I2S);
+        I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL2, 0x0010);
+
         /* Un-mute and power up DACs */
         I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
                         NAU8825_ENABLE_DACR | NAU8825_ENABLE_DACL,

@@ -244,9 +244,9 @@ void CCsAudioSofHW::NotifySidecarCodec(CSAudioEndpointType endpoint, BOOL start)
     CSAUDIO_STREAM_CONFIG config;
     RtlZeroMemory(&config, sizeof(config));
     config.SampleRate = 48000;
-    config.BitsPerSample = 16;
+    config.BitsPerSample = 32;
     config.Channels = 2;
-    config.SlotWidth = 16;
+    config.SlotWidth = 32;
 
     ULONG ioctl = start ? IOCTL_CSAUDIO_STREAM_START : IOCTL_CSAUDIO_STREAM_STOP;
 

@@ -240,24 +240,50 @@ Max98373_EvtPrepareHardware(
         }
     }
 
-    /* Detect Left vs Right speaker channel role from ACPI instance name */
+    /* Detect Left vs Right speaker channel role from ACPI BiosDeviceName / Instance ID */
     {
-        WDFMEMORY pdoMem = NULL;
-        if (NT_SUCCESS(WdfDeviceAllocAndQueryProperty(
+        WDF_DEVICE_PROPERTY_DATA propertyData;
+        WDFMEMORY mem = NULL;
+        DEVPROPTYPE propType;
+
+        WDF_DEVICE_PROPERTY_DATA_INIT(&propertyData, &DEVPKEY_Device_BiosDeviceName);
+        if (NT_SUCCESS(WdfDeviceAllocAndQueryPropertyEx(
                 Device,
-                DevicePropertyPhysicalDeviceObjectName,
+                &propertyData,
                 PagedPool,
                 WDF_NO_OBJECT_ATTRIBUTES,
-                &pdoMem))) {
-            PWSTR pdoName = (PWSTR)WdfMemoryGetBuffer(pdoMem, NULL);
-            if (pdoName) {
-                if (wcsstr(pdoName, L"MAXR") || wcsstr(pdoName, L"\\0")) {
+                &mem,
+                &propType))) {
+            PWSTR biosName = (PWSTR)WdfMemoryGetBuffer(mem, NULL);
+            if (biosName) {
+                if (wcsstr(biosName, L"MAXR")) {
                     devCtx->SpeakerRole = SPEAKER_ROLE_RIGHT;
-                } else if (wcsstr(pdoName, L"MAXL") || wcsstr(pdoName, L"\\1")) {
+                } else if (wcsstr(biosName, L"MAXL")) {
                     devCtx->SpeakerRole = SPEAKER_ROLE_LEFT;
                 }
             }
-            WdfObjectDelete(pdoMem);
+            WdfObjectDelete(mem);
+        }
+
+        if (devCtx->SpeakerRole == SPEAKER_ROLE_STEREO) {
+            WDF_DEVICE_PROPERTY_DATA_INIT(&propertyData, &DEVPKEY_Device_InstanceId);
+            if (NT_SUCCESS(WdfDeviceAllocAndQueryPropertyEx(
+                    Device,
+                    &propertyData,
+                    PagedPool,
+                    WDF_NO_OBJECT_ATTRIBUTES,
+                    &mem,
+                    &propType))) {
+                PWSTR instanceId = (PWSTR)WdfMemoryGetBuffer(mem, NULL);
+                if (instanceId) {
+                    if (wcsstr(instanceId, L"\\0")) {
+                        devCtx->SpeakerRole = SPEAKER_ROLE_RIGHT;
+                    } else if (wcsstr(instanceId, L"\\1")) {
+                        devCtx->SpeakerRole = SPEAKER_ROLE_LEFT;
+                    }
+                }
+                WdfObjectDelete(mem);
+            }
         }
     }
 
@@ -426,8 +452,8 @@ Max98373_InitializeHardware(
     I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2028_PCM_SR_SETUP_2, 0x88);
 
     /* Step 5: Speaker Path & Channel Mapping */
-    /* Enable PCM Rx channel 0 */
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x01);
+    /* Enable PCM Rx channels 0 and 1 (Left and Right slots) */
+    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x03);
 
     /* Speaker source: Left (0x00), Right (0x40), Mono Mix (0x80) */
     if (DevCtx->SpeakerRole == SPEAKER_ROLE_RIGHT) {
@@ -532,7 +558,7 @@ Max98373_SetStreamState(
             I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
         }
 
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x01);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x03);
         I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203E_AMP_PATH_GAIN, 0x0A);
         I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203F_AMP_DSP_CFG, 0x03);
         I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2041_AMP_CFG, 0x03);

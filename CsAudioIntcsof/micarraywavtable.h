@@ -32,7 +32,7 @@ Abstract:-
 static
 KSDATAFORMAT_WAVEFORMATEXTENSIBLE MicArrayPinSupportedDeviceFormats[] =
 {
-    // 48 KHz 16-bit 2 channels
+    // 48 KHz 32-bit 2 channels
     {
         {
             sizeof(KSDATAFORMAT_WAVEFORMATEXTENSIBLE),
@@ -48,12 +48,12 @@ KSDATAFORMAT_WAVEFORMATEXTENSIBLE MicArrayPinSupportedDeviceFormats[] =
                 WAVE_FORMAT_EXTENSIBLE,
                 2,
                 48000,
-                192000,
-                4,
-                16,
+                384000,
+                8,
+                32,
                 sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX)
             },
-            16,
+            32,
             KSAUDIO_SPEAKER_STEREO,
             STATICGUIDOF(KSDATAFORMAT_SUBTYPE_PCM)
         }

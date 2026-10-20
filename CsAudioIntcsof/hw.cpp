@@ -75,7 +75,7 @@ CCsAudioSofHW::CCsAudioSofHW(_In_ PRESOURCELIST ResourceList, _In_ PDEVICE_OBJEC
       m_runningCaptureStreams(0),
       m_sampleRate(48000),
       m_channels(2),
-      m_bitsPerSample(16),
+      m_bitsPerSample(32),
       m_pDeviceObject(DeviceObject),
       m_CsAudioAPICallback(NULL),
       m_CsAudioAPICallbackObj(NULL),
@@ -185,8 +185,8 @@ NTSTATUS CCsAudioSofHW::sof_program_dma(eDeviceType deviceType, PMDL mdl, IPortW
     RtlZeroMemory(&streamFormat, sizeof(streamFormat));
     streamFormat.SampleRate = 48000;
     streamFormat.NumberOfChannels = 2;
-    streamFormat.ValidBitsPerSample = 16;
-    streamFormat.ContainerSize = 16;
+    streamFormat.ValidBitsPerSample = 32;
+    streamFormat.ContainerSize = 32;
 
     ULONG totalBytes = mdl ? MmGetMdlByteCount(mdl) : DMA_BUFFER_SIZE;
     if (totalBytes == 0) totalBytes = DMA_BUFFER_SIZE;

@@ -58,6 +58,27 @@
 #define NAU8825_REG_LEFT_TIME_SLOT          0x1E
 #define NAU8825_REG_RIGHT_TIME_SLOT         0x1F
 
+/* I2S_PCM_CTRL1 (0x1C) */
+#define NAU8825_I2S_DF_SFT                  0
+#define NAU8825_I2S_DF_MASK                 (0x3 << NAU8825_I2S_DF_SFT)
+#define NAU8825_I2S_DF_RIGHT                (0x0 << NAU8825_I2S_DF_SFT)
+#define NAU8825_I2S_DF_LEFT                 (0x1 << NAU8825_I2S_DF_SFT)
+#define NAU8825_I2S_DF_I2S                  (0x2 << NAU8825_I2S_DF_SFT)
+#define NAU8825_I2S_DF_PCM                  (0x3 << NAU8825_I2S_DF_SFT)
+#define NAU8825_I2S_DL_SFT                  2
+#define NAU8825_I2S_DL_MASK                 (0x3 << NAU8825_I2S_DL_SFT)
+#define NAU8825_I2S_DL_16                   (0x0 << NAU8825_I2S_DL_SFT)
+#define NAU8825_I2S_DL_20                   (0x1 << NAU8825_I2S_DL_SFT)
+#define NAU8825_I2S_DL_24                   (0x2 << NAU8825_I2S_DL_SFT)
+#define NAU8825_I2S_DL_32                   (0x3 << NAU8825_I2S_DL_SFT)
+
+/* I2S_PCM_CTRL2 (0x1D) */
+#define NAU8825_I2S_TRISTATE                (1 << 15)
+#define NAU8825_I2S_MS_SFT                  3
+#define NAU8825_I2S_MS_MASK                 (1 << NAU8825_I2S_MS_SFT)
+#define NAU8825_I2S_MS_MASTER               (1 << NAU8825_I2S_MS_SFT)
+#define NAU8825_I2S_MS_SLAVE                (0 << NAU8825_I2S_MS_SFT)
+
 /* Equalizer / Bi-quad Filters */
 #define NAU8825_REG_BIQ_CTRL                0x20
 #define NAU8825_REG_ADC_RATE                0x2B

@@ -12,6 +12,8 @@
 #include <wdf.h>
 #include <spb.h>
 #include <ntstrsafe.h>
+#include <initguid.h>
+#include <devpkey.h>
 #define RESHUB_USE_HELPER_ROUTINES
 #include <reshub.h>
 
