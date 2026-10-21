@@ -21,6 +21,12 @@
 #include "..\Common\i2c_helper.h"
 #include "max98373_reg.h"
 
+/* Ensure debug prints always emit to kernel debug output in both Release and Debug */
+#ifdef KdPrintEx
+#undef KdPrintEx
+#endif
+#define KdPrintEx(args) DbgPrintEx args
+
 #define MAX98373_POOL_TAG '3789'
 
 typedef enum _SPEAKER_CHANNEL_ROLE {

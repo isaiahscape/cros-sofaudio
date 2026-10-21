@@ -482,13 +482,13 @@ Max98373_InitializeHardware(
     status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2023_PCM_TX_SRC_2, 0x00);
     if (!NT_SUCCESS(status)) return status;
 
-    /* Step 4: Digital Audio Interface (DAI) - 32-bit TDM Mode 0 at 256x fs (Intel ADSP SSP1) */
+    /* Step 4: Digital Audio Interface (DAI) - 32-bit I2S at 64x fs (Standard ChromeOS / Intel ADSP SSP) */
     status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG,
-                      MAX98373_PCM_MODE_CFG_CHANSZ_32 | MAX98373_PCM_FMT_TDM_MODE0);
+                      MAX98373_PCM_MODE_CFG_CHANSZ_32 | MAX98373_PCM_FMT_I2S);
     if (!NT_SUCCESS(status)) return status;
 
-    /* Clock Ratio: 256x fs (8 slots x 32 bits = 256 BCLKs per frame, 12.288 MHz BCLK) */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_256);
+    /* Clock Ratio: 64x fs (2 slots x 32 bits = 64 BCLKs per frame, 3.072 MHz BCLK) */
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_64);
     if (!NT_SUCCESS(status)) return status;
 
     /* Sample Rate: 48 kHz */
@@ -498,8 +498,8 @@ Max98373_InitializeHardware(
     if (!NT_SUCCESS(status)) return status;
 
     /* Step 5: Speaker Path & Channel Mapping */
-    /* Enable PCM Rx channel (bit 0 = RX_EN) and Tx channel (bit 0 = TX_EN) */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x01);
+    /* Enable PCM Rx channels 0 and 1 (both Left and Right slots active) and Tx channel */
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x03);
     if (!NT_SUCCESS(status)) return status;
     status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202C_PCM_TX_EN, 0x01);
     if (!NT_SUCCESS(status)) return status;
@@ -627,11 +627,11 @@ Max98373_SetStreamState(
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2023_PCM_TX_SRC_2, 0x00);
         if (!NT_SUCCESS(status)) return status;
 
-        /* Step 2: Re-apply DAI format: 32-bit TDM Mode 0 at 256x fs (Intel ADSP SSP1) */
+        /* Step 2: Re-apply DAI format: 32-bit I2S at 64x fs (Standard ChromeOS / Intel ADSP SSP) */
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG,
-                          MAX98373_PCM_MODE_CFG_CHANSZ_32 | MAX98373_PCM_FMT_TDM_MODE0);
+                          MAX98373_PCM_MODE_CFG_CHANSZ_32 | MAX98373_PCM_FMT_I2S);
         if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_256);
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_64);
         if (!NT_SUCCESS(status)) return status;
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2027_PCM_SR_SETUP_1, MAX98373_PCM_SR_48KHZ);
         if (!NT_SUCCESS(status)) return status;
@@ -656,8 +656,8 @@ Max98373_SetStreamState(
             if (!NT_SUCCESS(status)) return status;
         }
 
-        /* Step 4: Enable PCM RX (bit 0 = 1) and TX (bit 0 = 1) */
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x01);
+        /* Step 4: Enable PCM RX channels 0 and 1 (both Left and Right slots active) and TX channel */
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x03);
         if (!NT_SUCCESS(status)) return status;
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202C_PCM_TX_EN, 0x01);
         if (!NT_SUCCESS(status)) return status;

@@ -102,6 +102,14 @@ if exist "%SWITCHER_EXE%" (
     echo [OK] Switcher service installed and running.
 )
 
+:: 5. Restart audio devices to load newly installed drivers into kernel memory
+echo.
+echo [*] Reloading audio devices to activate newly updated drivers...
+pnputil /restart-device "ACPI\MX98373\0" >nul 2>&1
+pnputil /restart-device "ACPI\MX98373\1" >nul 2>&1
+pnputil /restart-device /deviceid "CSAUDIO\ADSP" >nul 2>&1
+pnputil /restart-device "ACPI\10508825\0" >nul 2>&1
+
 :: 4. Check hardware status
 echo.
 echo [4/4] Checking audio hardware device status in Device Manager...

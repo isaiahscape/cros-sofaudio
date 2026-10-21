@@ -77,7 +77,6 @@ static inline void udelay(LONG usec) {
 // Helper macros
 //
 
-#if DBG
 #define DEBUG_LEVEL_ERROR   1
 #define DEBUG_LEVEL_INFO    2
 #define DEBUG_LEVEL_VERBOSE 3
@@ -97,8 +96,4 @@ static inline void udelay(LONG usec) {
         DbgPrint(fmt, ##__VA_ARGS__);                             \
 		    }                                                           \
 }
-#else
-#define SklHdAudBusPrint(dbglevel, fmt, ...) {                       \
-}
-#endif
 #endif

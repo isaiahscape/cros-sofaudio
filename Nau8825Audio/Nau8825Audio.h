@@ -19,6 +19,12 @@
 #include "..\Common\i2c_helper.h"
 #include "nau8825_reg.h"
 
+/* Ensure debug prints always emit to kernel debug output in both Release and Debug */
+#ifdef KdPrintEx
+#undef KdPrintEx
+#endif
+#define KdPrintEx(args) DbgPrintEx args
+
 #define NAU8825_POOL_TAG '5288'
 
 typedef struct _NAU8825_DEVICE_CONTEXT {

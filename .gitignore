@@ -27,6 +27,7 @@ x86/
 *.7z
 *.tar.gz
 dist/
+tools/
 
 # Signing & Certificate files
 *.cer

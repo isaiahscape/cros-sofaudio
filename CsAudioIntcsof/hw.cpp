@@ -345,6 +345,24 @@ NTSTATUS CCsAudioSofHW::sof_play(eDeviceType deviceType, UINT32 byteCount)
 
 NTSTATUS CCsAudioSofHW::sof_stop(eDeviceType deviceType)
 {
+    if (deviceType == eSpeakerDevice || deviceType == eHeadphoneDevice) {
+        if (m_runningRenderStreams <= 0) {
+            return STATUS_SUCCESS;
+        }
+        InterlockedDecrement16(&m_runningRenderStreams);
+        if (m_hRenderStream && m_BusInterface.TriggerDSP) {
+            m_BusInterface.TriggerDSP(m_BusInterface.Context, m_hRenderStream, FALSE);
+        }
+    } else {
+        if (m_runningCaptureStreams <= 0) {
+            return STATUS_SUCCESS;
+        }
+        InterlockedDecrement16(&m_runningCaptureStreams);
+        if (m_hCaptureStream && m_BusInterface.TriggerDSP) {
+            m_BusInterface.TriggerDSP(m_BusInterface.Context, m_hCaptureStream, FALSE);
+        }
+    }
+
     // 1. Notify listeners on CsAudioCallbackAPI
     CsAudioArg arg;
     RtlZeroMemory(&arg, sizeof(CsAudioArg));
@@ -357,24 +375,8 @@ NTSTATUS CCsAudioSofHW::sof_stop(eDeviceType deviceType)
 
     // 2. Notify sidecar codec to enter power saving / low power state
     NTSTATUS sidecarStatus = NotifySidecarCodec(arg.endpointType, FALSE);
-    if (!NT_SUCCESS(sidecarStatus)) {
-        DPF(D_ERROR, ("[CsAudioIntcsof] sof_stop: sidecar codec notification failed 0x%08X\n", sidecarStatus));
-    }
-
-    if (deviceType == eSpeakerDevice || deviceType == eHeadphoneDevice) {
-        if (m_hRenderStream && m_BusInterface.TriggerDSP) {
-            m_BusInterface.TriggerDSP(m_BusInterface.Context, m_hRenderStream, FALSE);
-        }
-        if (m_runningRenderStreams > 0) {
-            InterlockedDecrement16(&m_runningRenderStreams);
-        }
-    } else {
-        if (m_hCaptureStream && m_BusInterface.TriggerDSP) {
-            m_BusInterface.TriggerDSP(m_BusInterface.Context, m_hCaptureStream, FALSE);
-        }
-        if (m_runningCaptureStreams > 0) {
-            InterlockedDecrement16(&m_runningCaptureStreams);
-        }
+    if (!NT_SUCCESS(sidecarStatus) && sidecarStatus != STATUS_DEVICE_NOT_CONNECTED) {
+        DPF(D_TERSE, ("[CsAudioIntcsof] sof_stop: sidecar codec notification returned 0x%08X\n", sidecarStatus));
     }
 
     return STATUS_SUCCESS;

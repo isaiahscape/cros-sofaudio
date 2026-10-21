@@ -48,7 +48,11 @@ DEFINE_GUIDSTRUCT("836BA6D1-3FF7-4411-8BCD-469553452DCF", PID_CSAUDIOINTCSOF);
 #define D_VERBOSE                   DEBUGLVL_VERBOSE        
 #define D_TERSE                     DEBUGLVL_TERSE          
 #define D_ERROR                     DEBUGLVL_ERROR          
-#define DPF                         _DbgPrintF
+
+#ifdef DPF
+#undef DPF
+#endif
+#define DPF(lvl, x)                 DbgPrint x
 #define DPF_ENTER(x)                DPF(D_FUNC, x)
 
 // Channel orientation
