@@ -173,6 +173,11 @@ static NTSTATUS SendIoctlToDeviceInterface(
     _In_ ULONG OutputBufferLength
 )
 {
+    if (KeGetCurrentIrql() > PASSIVE_LEVEL) {
+        DPF(D_TERSE, ("[CSAudio] SendIoctlToDeviceInterface called at IRQL %u > PASSIVE_LEVEL, rejecting synchronous IOCTL\n", (ULONG)KeGetCurrentIrql()));
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
     PWSTR symbolicLinkList = NULL;
     NTSTATUS status = IoGetDeviceInterfaces(
         InterfaceGuid,
@@ -241,6 +246,11 @@ static NTSTATUS SendIoctlToDeviceInterface(
 
 NTSTATUS CCsAudioSofHW::NotifySidecarCodec(CSAudioEndpointType endpoint, BOOL start)
 {
+    if (KeGetCurrentIrql() > PASSIVE_LEVEL) {
+        DPF(D_TERSE, ("[CSAudio] NotifySidecarCodec called at IRQL %u > PASSIVE_LEVEL, skipping synchronous notification\n", (ULONG)KeGetCurrentIrql()));
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
     CSAUDIO_STREAM_CONFIG config;
     RtlZeroMemory(&config, sizeof(config));
     config.SampleRate = 48000;
@@ -315,6 +325,11 @@ NTSTATUS CCsAudioSofHW::NotifySidecarCodec(CSAudioEndpointType endpoint, BOOL st
 
 void CCsAudioSofHW::SendSidecarVolume(CSAudioEndpointType endpoint, LONG volumeLevel, BOOL muted)
 {
+    if (KeGetCurrentIrql() > PASSIVE_LEVEL) {
+        DPF(D_TERSE, ("[CSAudio] SendSidecarVolume called at IRQL %u > PASSIVE_LEVEL, skipping\n", (ULONG)KeGetCurrentIrql()));
+        return;
+    }
+
     CSAUDIO_VOLUME_PARAMS params;
     RtlZeroMemory(&params, sizeof(params));
     params.Channel = 0;

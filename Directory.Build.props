@@ -1,0 +1,8 @@
+<Project>
+  <ItemDefinitionGroup>
+    <Inf>
+      <!-- Ensure Inf2Cat never rejects DriverVer due to local timezone being ahead of UTC -->
+      <DateStamp Condition="'%(Inf.DateStamp)' == '' or '%(Inf.DateStamp)' == '*'">$([System.DateTime]::UtcNow.ToString("MM/dd/yyyy"))</DateStamp>
+    </Inf>
+  </ItemDefinitionGroup>
+</Project>

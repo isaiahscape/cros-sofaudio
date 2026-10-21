@@ -335,9 +335,11 @@ NTSTATUS CCsAudioSofHW::sof_play(eDeviceType deviceType, UINT32 byteCount)
     }
 
     // 2. Notify registered sidecar codec (MAX98373 for speakers, NAU88L25 for headphones)
-    NTSTATUS sidecarStatus = NotifySidecarCodec(arg.endpointType, TRUE);
-    if (!NT_SUCCESS(sidecarStatus)) {
-        DPF(D_TERSE, ("[CsAudioIntcsof] sof_play: sidecar codec notification returned 0x%08X (continuing playback)\n", sidecarStatus));
+    if (KeGetCurrentIrql() == PASSIVE_LEVEL) {
+        NTSTATUS sidecarStatus = NotifySidecarCodec(arg.endpointType, TRUE);
+        if (!NT_SUCCESS(sidecarStatus)) {
+            DPF(D_TERSE, ("[CsAudioIntcsof] sof_play: sidecar codec notification returned 0x%08X (continuing playback)\n", sidecarStatus));
+        }
     }
 
     return STATUS_SUCCESS;
@@ -374,9 +376,11 @@ NTSTATUS CCsAudioSofHW::sof_stop(eDeviceType deviceType)
     }
 
     // 2. Notify sidecar codec to enter power saving / low power state
-    NTSTATUS sidecarStatus = NotifySidecarCodec(arg.endpointType, FALSE);
-    if (!NT_SUCCESS(sidecarStatus) && sidecarStatus != STATUS_DEVICE_NOT_CONNECTED) {
-        DPF(D_TERSE, ("[CsAudioIntcsof] sof_stop: sidecar codec notification returned 0x%08X\n", sidecarStatus));
+    if (KeGetCurrentIrql() == PASSIVE_LEVEL) {
+        NTSTATUS sidecarStatus = NotifySidecarCodec(arg.endpointType, FALSE);
+        if (!NT_SUCCESS(sidecarStatus) && sidecarStatus != STATUS_DEVICE_NOT_CONNECTED) {
+            DPF(D_TERSE, ("[CsAudioIntcsof] sof_stop: sidecar codec notification returned 0x%08X\n", sidecarStatus));
+        }
     }
 
     return STATUS_SUCCESS;

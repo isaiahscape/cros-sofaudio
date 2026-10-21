@@ -409,16 +409,12 @@ NTSTATUS CMiniportWaveRTStream::SetState
             {
                 // Acquire stream resources
             }
-            KeAcquireSpinLock(&m_PositionSpinLock, &oldIrql);
 
-            m_pMiniport->StopDMA();
+            ntStatus = m_pMiniport->StopDMA();
+
+            KeAcquireSpinLock(&m_PositionSpinLock, &oldIrql);
             m_llStartTime.QuadPart = 0;
             m_lastLinearPos = 0;
-
-            if (!NT_SUCCESS(ntStatus)) {
-                return ntStatus;
-            }
-
             KeReleaseSpinLock(&m_PositionSpinLock, oldIrql);
             break;
 
