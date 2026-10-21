@@ -55,6 +55,8 @@ typedef struct _MAX98373_DEVICE_CONTEXT {
     BOOLEAN                 InterleaveSlot;
     UINT8                   TdmRxSlot;        /* TDM playback channel */
     UINT8                   TdmTxSlot;        /* TDM feedback channel (I/V sense) */
+    UINT8                   VmonSlot;         /* Voltage sense slot (0 for right, 2 for left) */
+    UINT8                   ImonSlot;         /* Current sense slot (1 for right, 3 for left) */
 
 } MAX98373_DEVICE_CONTEXT, *PMAX98373_DEVICE_CONTEXT;
 

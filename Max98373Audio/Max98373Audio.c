@@ -277,18 +277,28 @@ Max98373_EvtPrepareHardware(
                 PWSTR instanceId = (PWSTR)WdfMemoryGetBuffer(mem, NULL);
                 if (instanceId) {
                     if (wcsstr(instanceId, L"\\0")) {
-                        devCtx->SpeakerRole = SPEAKER_ROLE_LEFT;
-                    } else if (wcsstr(instanceId, L"\\1")) {
                         devCtx->SpeakerRole = SPEAKER_ROLE_RIGHT;
+                    } else if (wcsstr(instanceId, L"\\1")) {
+                        devCtx->SpeakerRole = SPEAKER_ROLE_LEFT;
                     }
                 }
                 WdfObjectDelete(mem);
             }
         }
+
+        /* ACPI ssdt0.aml mapping: MAXR (_UID 0) uses vmon=0, imon=1; MAXL (_UID 1) uses vmon=2, imon=3 */
+        if (devCtx->SpeakerRole == SPEAKER_ROLE_LEFT) {
+            devCtx->VmonSlot = 2;
+            devCtx->ImonSlot = 3;
+        } else {
+            devCtx->VmonSlot = 0;
+            devCtx->ImonSlot = 1;
+        }
     }
 
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-        "Max98373Audio: I2C target opened successfully (SpeakerRole=%d)\n", devCtx->SpeakerRole));
+        "Max98373Audio: I2C target opened successfully (SpeakerRole=%d, VmonSlot=%d, ImonSlot=%d)\n",
+        devCtx->SpeakerRole, devCtx->VmonSlot, devCtx->ImonSlot));
 
     return STATUS_SUCCESS;
 }
@@ -460,14 +470,25 @@ Max98373_InitializeHardware(
     status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2016_THERM_HYSTERESIS, 0x01);
     if (!NT_SUCCESS(status)) return status;
 
-    /* Step 4: Digital Audio Interface (DAI) - I2S 48kHz Stereo */
-    /* PCM format: Standard I2S, 16-bit slot width */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG,
-                      MAX98373_PCM_MODE_CFG_CHANSZ_16 | MAX98373_PCM_FMT_I2S);
+    /* Step 3.5: IV Sense & TX Slot Hi-Z Masking (Critical for Intel ADSP SSP1 bus sharing) */
+    UINT16 hizMask = (UINT16)~((1 << DevCtx->VmonSlot) | (1 << DevCtx->ImonSlot));
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2020_PCM_TX_HIZ_EN_1, (UINT8)(hizMask & 0xFF));
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2021_PCM_TX_HIZ_EN_2, (UINT8)((hizMask >> 8) & 0xFF));
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2022_PCM_TX_SRC_1,
+        (UINT8)(((DevCtx->ImonSlot & 0xF) << 4) | (DevCtx->VmonSlot & 0xF)));
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2023_PCM_TX_SRC_2, 0x00);
     if (!NT_SUCCESS(status)) return status;
 
-    /* Clock Ratio: 32x fs (e.g., 1.536 MHz BCLK for 48 kHz 16-bit stereo) */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_32);
+    /* Step 4: Digital Audio Interface (DAI) - 32-bit TDM Mode 0 at 256x fs (Intel ADSP SSP1) */
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG,
+                      MAX98373_PCM_MODE_CFG_CHANSZ_32 | MAX98373_PCM_FMT_TDM_MODE0);
+    if (!NT_SUCCESS(status)) return status;
+
+    /* Clock Ratio: 256x fs (8 slots x 32 bits = 256 BCLKs per frame, 12.288 MHz BCLK) */
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_256);
     if (!NT_SUCCESS(status)) return status;
 
     /* Sample Rate: 48 kHz */
@@ -477,23 +498,25 @@ Max98373_InitializeHardware(
     if (!NT_SUCCESS(status)) return status;
 
     /* Step 5: Speaker Path & Channel Mapping */
-    /* Enable PCM Rx channels 0 and 1 (Left and Right slots) */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x03);
+    /* Enable PCM Rx channel (bit 0 = RX_EN) and Tx channel (bit 0 = TX_EN) */
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x01);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202C_PCM_TX_EN, 0x01);
     if (!NT_SUCCESS(status)) return status;
 
     /* Speaker source: Left (0x00), Right (0x40), Mono Mix (0x80) */
     if (DevCtx->SpeakerRole == SPEAKER_ROLE_RIGHT) {
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x40); /* Right channel */
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x40); /* Right channel (Slot 1) */
         if (!NT_SUCCESS(status)) return status;
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01); /* Slot 1 */
         if (!NT_SUCCESS(status)) return status;
     } else if (DevCtx->SpeakerRole == SPEAKER_ROLE_LEFT) {
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x00); /* Left channel */
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x00); /* Left channel (Slot 0) */
         if (!NT_SUCCESS(status)) return status;
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01); /* Slot 1 */
         if (!NT_SUCCESS(status)) return status;
     } else {
-        /* Stereo / fallback: mix Left + Right so both speakers play */
+        /* Stereo fallback: mix Left + Right so both speakers play */
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x80);
         if (!NT_SUCCESS(status)) return status;
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
@@ -506,13 +529,19 @@ Max98373_InitializeHardware(
     status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203D_AMP_DIG_VOL_CTRL, MAX98373_AMP_VOL_0DB); /* 0 dB */
     if (!NT_SUCCESS(status)) return status;
 
-    /* Step 6.5: DSP Configuration - Enable DC blocker and dither */
+    /* Step 6.5: DSP Configuration - Enable DC blocker, dither, and IV-sense ADC */
     status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203F_AMP_DSP_CFG, 0x03);
     if (!NT_SUCCESS(status)) return status;
     status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2041_AMP_CFG, 0x03);
     if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2046_IV_SENSE_ADC_DSP_CFG, 0xF7);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2047_IV_SENSE_ADC_EN, 0x03);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Step 7: Limiter & Dynamic Headroom Protection */
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20B1_BDE_L4_CFG_1, 0x06);
+    if (!NT_SUCCESS(status)) return status;
     status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20D1_DHT_CFG, 0x01);
     if (!NT_SUCCESS(status)) return status;
     status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20D4_DHT_EN, 0x01);
@@ -586,26 +615,39 @@ Max98373_SetStreamState(
         delay.QuadPart = -10000LL; /* 1ms delay for rail ramp */
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
 
-        /* Re-apply DAI format and speaker routing to guarantee active state */
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG,
-                          MAX98373_PCM_MODE_CFG_CHANSZ_16 | MAX98373_PCM_FMT_I2S);
+        /* Step 1: Re-apply IV-sense TX Hi-Z and source registers */
+        UINT16 hizMask = (UINT16)~((1 << DevCtx->VmonSlot) | (1 << DevCtx->ImonSlot));
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2020_PCM_TX_HIZ_EN_1, (UINT8)(hizMask & 0xFF));
         if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_32);
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2021_PCM_TX_HIZ_EN_2, (UINT8)((hizMask >> 8) & 0xFF));
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2022_PCM_TX_SRC_1,
+            (UINT8)(((DevCtx->ImonSlot & 0xF) << 4) | (DevCtx->VmonSlot & 0xF)));
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2023_PCM_TX_SRC_2, 0x00);
+        if (!NT_SUCCESS(status)) return status;
+
+        /* Step 2: Re-apply DAI format: 32-bit TDM Mode 0 at 256x fs (Intel ADSP SSP1) */
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG,
+                          MAX98373_PCM_MODE_CFG_CHANSZ_32 | MAX98373_PCM_FMT_TDM_MODE0);
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_256);
         if (!NT_SUCCESS(status)) return status;
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2027_PCM_SR_SETUP_1, MAX98373_PCM_SR_48KHZ);
         if (!NT_SUCCESS(status)) return status;
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2028_PCM_SR_SETUP_2, 0x88);
         if (!NT_SUCCESS(status)) return status;
 
+        /* Step 3: Speaker channel slot routing */
         if (DevCtx->SpeakerRole == SPEAKER_ROLE_RIGHT) {
-            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x40);
+            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x40); /* Slot 1 */
             if (!NT_SUCCESS(status)) return status;
-            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
+            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01); /* Slot 1 */
             if (!NT_SUCCESS(status)) return status;
         } else if (DevCtx->SpeakerRole == SPEAKER_ROLE_LEFT) {
-            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x00);
+            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x00); /* Slot 0 */
             if (!NT_SUCCESS(status)) return status;
-            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
+            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01); /* Slot 1 */
             if (!NT_SUCCESS(status)) return status;
         } else {
             status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x80);
@@ -614,13 +656,22 @@ Max98373_SetStreamState(
             if (!NT_SUCCESS(status)) return status;
         }
 
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x03);
+        /* Step 4: Enable PCM RX (bit 0 = 1) and TX (bit 0 = 1) */
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x01);
         if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202C_PCM_TX_EN, 0x01);
+        if (!NT_SUCCESS(status)) return status;
+
+        /* Step 5: Gain, DSP, IV ADC, and Auto-restart */
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203E_AMP_PATH_GAIN, 0x0A);
         if (!NT_SUCCESS(status)) return status;
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203F_AMP_DSP_CFG, 0x03);
         if (!NT_SUCCESS(status)) return status;
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2041_AMP_CFG, 0x03);
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2046_IV_SENSE_ADC_DSP_CFG, 0xF7);
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2047_IV_SENSE_ADC_EN, 0x03);
         if (!NT_SUCCESS(status)) return status;
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FE_DEVICE_AUTO_RESTART_CFG, 0x0F);
         if (!NT_SUCCESS(status)) return status;
