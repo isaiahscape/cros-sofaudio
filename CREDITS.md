@@ -15,6 +15,7 @@ This project owes immense gratitude and credit to **CoolStar** ([@coolstarorg](h
 - The `CsAudioIntcsof` driver integrates this framework with the `ADSP_BUS_INTERFACE` DMA pipes for Sound Open Firmware (SOF) topologies.
 
 ### 3. Maxim MAX98373 & Nuvoton NAU88L25 Codec Drivers
+- **MAX98373 Hardware Registers & DAI Configuration:** Directly referenced and ported from **CoolStar** ([coolstar/opengmaxcodec](https://github.com/coolstar/opengmaxcodec)), utilizing CoolStar's proven TDM Mode 0, clock ratio (128x fs), unmuted digital volume staging, and TX Hi-Z slot masking sequences that make the internal speakers work on Windows.
 - Built to interface seamlessly with the `csaudio` callback and IOCTL sidecar interface designed by CoolStar.
 
 ---

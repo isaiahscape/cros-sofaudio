@@ -16,6 +16,7 @@
 #include <devpkey.h>
 #define RESHUB_USE_HELPER_ROUTINES
 #include <reshub.h>
+#include <acpiioct.h>
 
 #include "..\Common\csaudio_codec.h"
 #include "..\Common\i2c_helper.h"
@@ -58,11 +59,17 @@ typedef struct _MAX98373_DEVICE_CONTEXT {
     UINT32                  SampleRate;       /* Current PCM sample rate (default 48000) */
 
     /* ACPI Settings */
+    INT32                   UID;
     BOOLEAN                 InterleaveSlot;
     UINT8                   TdmRxSlot;        /* TDM playback channel */
     UINT8                   TdmTxSlot;        /* TDM feedback channel (I/V sense) */
     UINT8                   VmonSlot;         /* Voltage sense slot (0 for right, 2 for left) */
     UINT8                   ImonSlot;         /* Current sense slot (1 for right, 3 for left) */
+
+    /* Inter-driver Callback Communication */
+    PCALLBACK_OBJECT        CSAudioAPICallback;
+    PVOID                   CSAudioAPICallbackObj;
+    BOOLEAN                 CSAudioRequestsOn;
 
 } MAX98373_DEVICE_CONTEXT, *PMAX98373_DEVICE_CONTEXT;
 
@@ -73,6 +80,7 @@ DRIVER_INITIALIZE DriverEntry;
 EVT_WDF_DRIVER_DEVICE_ADD Max98373_EvtDeviceAdd;
 EVT_WDF_DEVICE_PREPARE_HARDWARE Max98373_EvtPrepareHardware;
 EVT_WDF_DEVICE_RELEASE_HARDWARE Max98373_EvtReleaseHardware;
+EVT_WDF_DEVICE_SELF_MANAGED_IO_INIT Max98373_EvtSelfManagedIoInit;
 EVT_WDF_DEVICE_D0_ENTRY Max98373_EvtD0Entry;
 EVT_WDF_DEVICE_D0_EXIT Max98373_EvtD0Exit;
 
@@ -106,4 +114,11 @@ Max98373_SetVolume(
     _In_ PMAX98373_DEVICE_CONTEXT DevCtx,
     _In_ UINT8 VolumeDb,
     _In_ BOOLEAN Mute
+    );
+
+VOID
+Max98373_CsAudioCallbackFunction(
+    _In_opt_ PVOID CallbackContext,
+    _In_opt_ PVOID Argument1,
+    _In_opt_ PVOID Argument2
     );

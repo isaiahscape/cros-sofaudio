@@ -138,12 +138,19 @@
 #define MAX98373_AMP_ENABLE                 0x01
 #define MAX98373_AMP_DISABLE                0x00
 
-/* PCM_DATA_FMT_CFG (0x2024) - Matching Linux max98373.h */
+/* PCM_DATA_FMT_CFG (0x2024) - Matching Linux & OpenGMaxCodec */
+#define MAX98373_PCM_MODE_CFG_FORMAT_MASK   (0x7 << 3)
+#define MAX98373_PCM_MODE_CFG_FORMAT_SHIFT  (3)
+#define MAX98373_PCM_TX_CH_INTERLEAVE_MASK  (0x1 << 2)
+#define MAX98373_PCM_FORMAT_I2S             (0x0 << 0)
+#define MAX98373_PCM_FORMAT_LJ              (0x1 << 0)
+#define MAX98373_PCM_FORMAT_TDM_MODE0       (0x3 << 0)
+#define MAX98373_PCM_FORMAT_TDM_MODE1       (0x4 << 0)
+#define MAX98373_PCM_FORMAT_TDM_MODE2       (0x5 << 0)
 #define MAX98373_PCM_FMT_I2S                (0x0 << 3)
 #define MAX98373_PCM_FMT_LEFT_JUST          (0x1 << 3)
 #define MAX98373_PCM_FMT_TDM_MODE0          (0x3 << 3)
 #define MAX98373_PCM_FMT_TDM_MODE1          (0x4 << 3)
-#define MAX98373_PCM_MODE_CFG_FORMAT_MASK   (0x7 << 3)
 #define MAX98373_PCM_MODE_CFG_CHANSZ_16     (0x1 << 6)
 #define MAX98373_PCM_MODE_CFG_CHANSZ_24     (0x2 << 6)
 #define MAX98373_PCM_MODE_CFG_CHANSZ_32     (0x3 << 6)

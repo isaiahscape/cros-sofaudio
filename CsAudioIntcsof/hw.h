@@ -26,37 +26,7 @@ typedef struct _HDAC_BDLENTRY {
     UINT32 ioc;
 } HDAC_BDLENTRY, *PHDAC_BDLENTRY;
 
-typedef enum {
-    CSAudioEndpointTypeDSP,
-    CSAudioEndpointTypeSpeaker,
-    CSAudioEndpointTypeHeadphone,
-    CSAudioEndpointTypeMicArray,
-    CSAudioEndpointTypeMicJack
-} CSAudioEndpointType;
 
-typedef enum {
-    CSAudioEndpointRegister,
-    CSAudioEndpointStart,
-    CSAudioEndpointStop,
-    CSAudioEndpointOverrideFormat
-} CSAudioEndpointRequest;
-
-typedef struct CSAUDIOFORMATOVERRIDE {
-    UINT16 channels;
-    UINT16 frequency;
-    UINT16 bitsPerSample;
-    UINT16 validBitsPerSample;
-    BOOL force32BitOutputContainer;
-} CsAudioFormatOverride;
-
-typedef struct CSAUDIOARG {
-    UINT32 argSz;
-    CSAudioEndpointType endpointType;
-    CSAudioEndpointRequest endpointRequest;
-    union {
-        CsAudioFormatOverride formatOverride;
-    };
-} CsAudioArg, * PCsAudioArg;
 
 #define MAX_TOPOLOGY_NODES      20
 

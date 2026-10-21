@@ -42,6 +42,41 @@ typedef enum _CSAUDIO_CODEC_TYPE {
     CSAUDIO_CODEC_TYPE_DMIC      = 4,   /* Digital Mic Array */
 } CSAUDIO_CODEC_TYPE;
 
+typedef enum {
+    CSAudioEndpointTypeDSP        = 0,
+    CSAudioEndpointTypeSpeaker    = 1,
+    CSAudioEndpointTypeHeadphone  = 2,
+    CSAudioEndpointTypeMicArray   = 3,
+    CSAudioEndpointTypeMicJack    = 4
+} CSAudioEndpointType;
+
+typedef enum {
+    CSAudioEndpointRegister       = 0,
+    CSAudioEndpointStart          = 1,
+    CSAudioEndpointStop           = 2,
+    CSAudioEndpointOverrideFormat = 3
+} CSAudioEndpointRequest;
+
+typedef struct CSAUDIOFORMATOVERRIDE {
+    UINT16 channels;
+    UINT16 frequency;
+    UINT16 bitsPerSample;
+    UINT16 validBitsPerSample;
+    BOOLEAN force32BitOutputContainer;
+} CsAudioFormatOverride;
+
+#pragma warning(push)
+#pragma warning(disable:4201)
+typedef struct CSAUDIOARG {
+    UINT32 argSz;
+    CSAudioEndpointType endpointType;
+    CSAudioEndpointRequest endpointRequest;
+    union {
+        CsAudioFormatOverride formatOverride;
+    };
+} CsAudioArg, *PCsAudioArg;
+#pragma warning(pop)
+
 typedef enum _CSAUDIO_ENDPOINT_TYPE {
     CSAUDIO_ENDPOINT_SPEAKER     = 0x01,
     CSAUDIO_ENDPOINT_HEADPHONE   = 0x02,

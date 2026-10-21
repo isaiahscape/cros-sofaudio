@@ -120,6 +120,35 @@ I2cReadRegister8(
 }
 
 /*
+ * I2cUpdateRegister8 - Read-modify-write an 8-bit register on a 16-bit register address
+ */
+_IRQL_requires_max_(PASSIVE_LEVEL)
+FORCEINLINE
+NTSTATUS
+I2cUpdateRegister8(
+    _In_ WDFIOTARGET SpbTarget,
+    _In_ UINT16 Register,
+    _In_ UINT8 Mask,
+    _In_ UINT8 Value
+    )
+{
+    NTSTATUS status;
+    UINT8 orig = 0;
+    UINT8 temp = 0;
+
+    status = I2cReadRegister8(SpbTarget, Register, &orig);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    temp = (orig & ~Mask) | (Value & Mask);
+    if (temp != orig) {
+        status = I2cWriteRegister8(SpbTarget, Register, temp);
+    }
+    return status;
+}
+
+/*
  * I2cWriteRegister16 - Write 16-bit value to a 16-bit register address (big-endian)
  *
  * Format on I2C bus: [RegAddr_MSB, RegAddr_LSB, Value_MSB, Value_LSB]

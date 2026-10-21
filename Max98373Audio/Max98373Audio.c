@@ -4,9 +4,17 @@
  * Implements:
  *   1. DriverEntry and EvtDriverDeviceAdd
  *   2. ACPI SPB (I2C) resource parsing and I2C connection management
- *   3. Hardware initialization, software reset, clock configuration, and gain staging
- *   4. Power transitions (EvtDeviceD0Entry / EvtDeviceD0Exit)
- *   5. CSAudio bus / Sidecar IOCTL dispatch (stream start/stop, volume control, reg I/O)
+ *   3. Hardware initialization matching CoolStar opengmaxcodec:
+ *      - TDM Mode 0 digital audio interface format (0x58)
+ *      - 128x fs clock ratio (0x06) for 6.144 MHz BCLK
+ *      - Unattenuated digital volume (12 = 0x0C) and analog gain
+ *      - TX Hi-Z masking to avoid playback bus contention on slots 0-3
+ *      - Slot routing: Left to Slot 0 (0x00), Right to Slot 1 (0x40)
+ *      - Global shutdown disable followed by amplifier enable
+ *   4. Dual notification:
+ *      - CsAudioCallbackAPI listener (\CallBack\CsAudioCallbackAPI)
+ *      - IOCTL_CSAUDIO_STREAM_START / STOP sidecar bridge
+ *   5. Power transitions (EvtDeviceD0Entry / EvtDeviceD0Exit)
  *
  * Copyright (c) 2026. Licensed under the MIT License.
  */
@@ -18,6 +26,7 @@
 #pragma alloc_text(PAGE, Max98373_EvtDeviceAdd)
 #pragma alloc_text(PAGE, Max98373_EvtPrepareHardware)
 #pragma alloc_text(PAGE, Max98373_EvtReleaseHardware)
+#pragma alloc_text(PAGE, Max98373_EvtSelfManagedIoInit)
 #pragma alloc_text(PAGE, Max98373_EvtD0Entry)
 #pragma alloc_text(PAGE, Max98373_EvtD0Exit)
 #pragma alloc_text(PAGE, Max98373_InitializeHardware)
@@ -25,6 +34,29 @@
 #pragma alloc_text(PAGE, Max98373_SetStreamState)
 #pragma alloc_text(PAGE, Max98373_SetVolume)
 #endif
+
+static int CsAudioArg2 = 1;
+
+/* =========================================================================
+ * Base Register Initialization Table (matching CoolStar opengmaxcodec)
+ * ========================================================================= */
+
+struct max98373_initreg {
+    UINT16 reg;
+    UINT8  val;
+};
+
+static const struct max98373_initreg c_Max98373_InitRegs[] = {
+    { MAX98373_R2024_PCM_DATA_FMT_CFG,      0x58 },
+    { MAX98373_R2026_PCM_CLOCK_RATIO,       0x06 },
+    { MAX98373_R202B_PCM_RX_EN,             0x01 },
+    { MAX98373_R202C_PCM_TX_EN,             0x01 },
+    { MAX98373_R203F_AMP_DSP_CFG,           0x03 },
+    { MAX98373_R2046_IV_SENSE_ADC_DSP_CFG,  0xF7 },
+    { MAX98373_R2047_IV_SENSE_ADC_EN,       0x03 },
+    { MAX98373_R20B1_BDE_L4_CFG_1,          0x06 },
+    { MAX98373_R20D4_DHT_EN,                0x01 }
+};
 
 /* =========================================================================
  * DriverEntry
@@ -87,10 +119,11 @@ Max98373_EvtDeviceAdd(
 
     /* Register PnP and Power Callbacks */
     WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnpCallbacks);
-    pnpCallbacks.EvtDevicePrepareHardware = Max98373_EvtPrepareHardware;
-    pnpCallbacks.EvtDeviceReleaseHardware = Max98373_EvtReleaseHardware;
-    pnpCallbacks.EvtDeviceD0Entry         = Max98373_EvtD0Entry;
-    pnpCallbacks.EvtDeviceD0Exit          = Max98373_EvtD0Exit;
+    pnpCallbacks.EvtDevicePrepareHardware      = Max98373_EvtPrepareHardware;
+    pnpCallbacks.EvtDeviceReleaseHardware      = Max98373_EvtReleaseHardware;
+    pnpCallbacks.EvtDeviceSelfManagedIoInit    = Max98373_EvtSelfManagedIoInit;
+    pnpCallbacks.EvtDeviceD0Entry              = Max98373_EvtD0Entry;
+    pnpCallbacks.EvtDeviceD0Exit               = Max98373_EvtD0Exit;
     WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnpCallbacks);
 
     /* Allocate Device Context */
@@ -106,8 +139,8 @@ Max98373_EvtDeviceAdd(
     devCtx = GetMax98373Context(device);
     RtlZeroMemory(devCtx, sizeof(MAX98373_DEVICE_CONTEXT));
     devCtx->Device       = device;
-    devCtx->VolumeDb     = 0;                 /* 0 dB */
-    devCtx->HardwareGain = MAX98373_SPK_GAIN_DEFAULT; /* +15.5 dB */
+    devCtx->VolumeDb     = 12;                /* 12 = 0x0C (-6 dB unmuted) */
+    devCtx->HardwareGain = 0;                 /* 0 dB analog gain */
     devCtx->SampleRate   = 48000;             /* Standard 48 kHz */
     devCtx->SpeakerRole  = SPEAKER_ROLE_STEREO;
 
@@ -142,6 +175,187 @@ Max98373_EvtDeviceAdd(
     }
 
     return STATUS_SUCCESS;
+}
+
+/* =========================================================================
+ * ACPI Helpers — Query _UID and _DSD Integer Properties
+ * ========================================================================= */
+
+static NTSTATUS
+Max98373_GetDeviceUID(
+    _In_ WDFDEVICE FxDevice,
+    _Out_ PINT32 PUID
+    )
+{
+    NTSTATUS status;
+    ACPI_EVAL_INPUT_BUFFER_EX inputBuffer;
+    RtlZeroMemory(&inputBuffer, sizeof(inputBuffer));
+
+    inputBuffer.Signature = ACPI_EVAL_INPUT_BUFFER_SIGNATURE_EX;
+    status = RtlStringCchPrintfA(
+        inputBuffer.MethodName,
+        sizeof(inputBuffer.MethodName),
+        "_UID"
+    );
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    WDFMEMORY outputMemory = WDF_NO_HANDLE;
+    PACPI_EVAL_OUTPUT_BUFFER outputBuffer = NULL;
+    size_t outputArgumentBufferSize = 32;
+    size_t outputBufferSize = FIELD_OFFSET(ACPI_EVAL_OUTPUT_BUFFER, Argument) + outputArgumentBufferSize;
+
+    WDF_OBJECT_ATTRIBUTES attributes;
+    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+    attributes.ParentObject = FxDevice;
+
+    status = WdfMemoryCreate(&attributes,
+        NonPagedPoolNx,
+        MAX98373_POOL_TAG,
+        outputBufferSize,
+        &outputMemory,
+        (PVOID*)&outputBuffer);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    RtlZeroMemory(outputBuffer, outputBufferSize);
+
+    WDF_MEMORY_DESCRIPTOR inputMemDesc;
+    WDF_MEMORY_DESCRIPTOR outputMemDesc;
+    WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&inputMemDesc, &inputBuffer, (ULONG)sizeof(inputBuffer));
+    WDF_MEMORY_DESCRIPTOR_INIT_HANDLE(&outputMemDesc, outputMemory, NULL);
+
+    status = WdfIoTargetSendInternalIoctlSynchronously(
+        WdfDeviceGetIoTarget(FxDevice),
+        NULL,
+        IOCTL_ACPI_EVAL_METHOD_EX,
+        &inputMemDesc,
+        &outputMemDesc,
+        NULL,
+        NULL
+    );
+    if (!NT_SUCCESS(status)) {
+        goto Exit;
+    }
+
+    if (outputBuffer->Signature != ACPI_EVAL_OUTPUT_BUFFER_SIGNATURE || outputBuffer->Count < 1) {
+        status = STATUS_ACPI_INVALID_DATA;
+        goto Exit;
+    }
+
+    UINT32 uid = 0;
+    if (outputBuffer->Argument[0].DataLength >= 4) {
+        uid = *(UINT32*)outputBuffer->Argument[0].Data;
+    } else if (outputBuffer->Argument[0].DataLength >= 2) {
+        uid = *(UINT16*)outputBuffer->Argument[0].Data;
+    } else if (outputBuffer->Argument[0].DataLength >= 1) {
+        uid = *(UINT8*)outputBuffer->Argument[0].Data;
+    }
+
+    if (PUID) {
+        *PUID = (INT32)uid;
+    }
+
+Exit:
+    if (outputMemory != WDF_NO_HANDLE) {
+        WdfObjectDelete(outputMemory);
+    }
+    return status;
+}
+
+static NTSTATUS
+Max98373_GetIntegerProperty(
+    _In_ WDFDEVICE FxDevice,
+    _In_ PCSTR PropertyStr,
+    _Out_ UINT16* Property
+    )
+{
+    WDFMEMORY outputMemory = WDF_NO_HANDLE;
+    NTSTATUS status = STATUS_ACPI_NOT_INITIALIZED;
+    size_t propLen = strlen(PropertyStr) + 1;
+    size_t inputBufferLen = sizeof(ACPI_GET_DEVICE_SPECIFIC_DATA) + propLen;
+
+    ACPI_GET_DEVICE_SPECIFIC_DATA* inputBuffer = (ACPI_GET_DEVICE_SPECIFIC_DATA*)ExAllocatePoolWithTag(
+        NonPagedPoolNx,
+        inputBufferLen,
+        MAX98373_POOL_TAG
+    );
+    if (!inputBuffer) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlZeroMemory(inputBuffer, inputBufferLen);
+
+    inputBuffer->Signature = IOCTL_ACPI_GET_DEVICE_SPECIFIC_DATA_SIGNATURE;
+
+    /* ACPI _DSD device properties UUID: daffd814-6eba-4d8c-8a91-bc9bbf4aa301 */
+    unsigned char uuidend[] = { 0x8a, 0x91, 0xbc, 0x9b, 0xbf, 0x4a, 0xa3, 0x01 };
+    inputBuffer->Section.Data1 = 0xdaffd814;
+    inputBuffer->Section.Data2 = 0x6eba;
+    inputBuffer->Section.Data3 = 0x4d8c;
+    memcpy(inputBuffer->Section.Data4, uuidend, sizeof(uuidend));
+
+    RtlCopyMemory(inputBuffer->PropertyName, PropertyStr, propLen);
+    inputBuffer->PropertyNameLength = (ULONG)propLen;
+
+    PACPI_EVAL_OUTPUT_BUFFER outputBuffer = NULL;
+    size_t outputArgumentBufferSize = 8;
+    size_t outputBufferSize = FIELD_OFFSET(ACPI_EVAL_OUTPUT_BUFFER, Argument) + sizeof(ACPI_METHOD_ARGUMENT_V1) + outputArgumentBufferSize;
+
+    WDF_OBJECT_ATTRIBUTES attributes;
+    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+    attributes.ParentObject = FxDevice;
+
+    status = WdfMemoryCreate(&attributes,
+        NonPagedPoolNx,
+        MAX98373_POOL_TAG,
+        outputBufferSize,
+        &outputMemory,
+        (PVOID*)&outputBuffer
+    );
+    if (!NT_SUCCESS(status)) {
+        goto Exit;
+    }
+
+    WDF_MEMORY_DESCRIPTOR inputMemDesc;
+    WDF_MEMORY_DESCRIPTOR outputMemDesc;
+    WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&inputMemDesc, inputBuffer, (ULONG)inputBufferLen);
+    WDF_MEMORY_DESCRIPTOR_INIT_HANDLE(&outputMemDesc, outputMemory, NULL);
+
+    status = WdfIoTargetSendInternalIoctlSynchronously(
+        WdfDeviceGetIoTarget(FxDevice),
+        NULL,
+        IOCTL_ACPI_GET_DEVICE_SPECIFIC_DATA,
+        &inputMemDesc,
+        &outputMemDesc,
+        NULL,
+        NULL
+    );
+    if (!NT_SUCCESS(status)) {
+        goto Exit;
+    }
+
+    if (outputBuffer->Signature != ACPI_EVAL_OUTPUT_BUFFER_SIGNATURE_V1 ||
+        outputBuffer->Count < 1 ||
+        outputBuffer->Argument[0].Type != ACPI_METHOD_ARGUMENT_INTEGER ||
+        outputBuffer->Argument[0].DataLength < 1) {
+        status = STATUS_ACPI_INVALID_ARGUMENT;
+        goto Exit;
+    }
+
+    if (Property) {
+        *Property = (UINT16)(outputBuffer->Argument[0].Data[0] & 0xF);
+    }
+
+Exit:
+    if (inputBuffer) {
+        ExFreePoolWithTag(inputBuffer, MAX98373_POOL_TAG);
+    }
+    if (outputMemory != WDF_NO_HANDLE) {
+        WdfObjectDelete(outputMemory);
+    }
+    return status;
 }
 
 /* =========================================================================
@@ -240,6 +454,14 @@ Max98373_EvtPrepareHardware(
         }
     }
 
+    /* Query ACPI _UID method */
+    INT32 uid = 0;
+    if (NT_SUCCESS(Max98373_GetDeviceUID(Device, &uid))) {
+        devCtx->UID = uid;
+    } else {
+        devCtx->UID = 0;
+    }
+
     /* Detect Left vs Right speaker channel role from ACPI BiosDeviceName / Instance ID */
     {
         WDF_DEVICE_PROPERTY_DATA propertyData;
@@ -278,33 +500,26 @@ Max98373_EvtPrepareHardware(
                 if (instanceId) {
                     if (wcsstr(instanceId, L"\\0")) {
                         devCtx->SpeakerRole = SPEAKER_ROLE_RIGHT;
+                        devCtx->UID = 0;
                     } else if (wcsstr(instanceId, L"\\1")) {
                         devCtx->SpeakerRole = SPEAKER_ROLE_LEFT;
+                        devCtx->UID = 1;
                     }
                 }
                 WdfObjectDelete(mem);
             }
         }
-
-        /* ACPI ssdt0.aml mapping: MAXR (_UID 0) uses vmon=0, imon=1; MAXL (_UID 1) uses vmon=2, imon=3 */
-        if (devCtx->SpeakerRole == SPEAKER_ROLE_LEFT) {
-            devCtx->VmonSlot = 2;
-            devCtx->ImonSlot = 3;
-        } else {
-            devCtx->VmonSlot = 0;
-            devCtx->ImonSlot = 1;
-        }
     }
 
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-        "Max98373Audio: I2C target opened successfully (SpeakerRole=%d, VmonSlot=%d, ImonSlot=%d)\n",
-        devCtx->SpeakerRole, devCtx->VmonSlot, devCtx->ImonSlot));
+        "Max98373Audio: I2C target opened (UID=%d, SpeakerRole=%d)\n",
+        devCtx->UID, devCtx->SpeakerRole));
 
     return STATUS_SUCCESS;
 }
 
 /* =========================================================================
- * EvtReleaseHardware — Close I2C target
+ * EvtReleaseHardware — Close I2C target and unregister callbacks
  * ========================================================================= */
 
 _Use_decl_annotations_
@@ -324,6 +539,16 @@ Max98373_EvtReleaseHardware(
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
         "Max98373Audio: EvtReleaseHardware\n"));
 
+    if (devCtx->CSAudioAPICallbackObj) {
+        ExUnregisterCallback(devCtx->CSAudioAPICallbackObj);
+        devCtx->CSAudioAPICallbackObj = NULL;
+    }
+
+    if (devCtx->CSAudioAPICallback) {
+        ObfDereferenceObject(devCtx->CSAudioAPICallback);
+        devCtx->CSAudioAPICallback = NULL;
+    }
+
     if (devCtx->SpbTarget != NULL) {
         WdfIoTargetClose(devCtx->SpbTarget);
         WdfObjectDelete(devCtx->SpbTarget);
@@ -331,6 +556,102 @@ Max98373_EvtReleaseHardware(
     }
 
     return STATUS_SUCCESS;
+}
+
+/* =========================================================================
+ * EvtSelfManagedIoInit — Register CsAudioCallbackAPI listener
+ * ========================================================================= */
+
+_Use_decl_annotations_
+NTSTATUS
+Max98373_EvtSelfManagedIoInit(
+    _In_ WDFDEVICE Device
+    )
+{
+    PMAX98373_DEVICE_CONTEXT devCtx = GetMax98373Context(Device);
+    NTSTATUS status;
+
+    PAGED_CODE();
+
+    UNICODE_STRING callbackName;
+    RtlInitUnicodeString(&callbackName, L"\\CallBack\\CsAudioCallbackAPI");
+
+    OBJECT_ATTRIBUTES attributes;
+    InitializeObjectAttributes(
+        &attributes,
+        &callbackName,
+        OBJ_KERNEL_HANDLE | OBJ_OPENIF | OBJ_CASE_INSENSITIVE | OBJ_PERMANENT,
+        NULL,
+        NULL
+    );
+
+    status = ExCreateCallback(&devCtx->CSAudioAPICallback, &attributes, TRUE, TRUE);
+    if (!NT_SUCCESS(status)) {
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
+            "Max98373Audio: ExCreateCallback failed 0x%08X\n", status));
+        return status;
+    }
+
+    devCtx->CSAudioAPICallbackObj = ExRegisterCallback(
+        devCtx->CSAudioAPICallback,
+        (PCALLBACK_FUNCTION)Max98373_CsAudioCallbackFunction,
+        devCtx
+    );
+
+    if (!devCtx->CSAudioAPICallbackObj) {
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
+            "Max98373Audio: ExRegisterCallback failed\n"));
+        return STATUS_NO_CALLBACK_ACTIVE;
+    }
+
+    KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
+        "Max98373Audio: Registered CsAudioCallbackAPI listener\n"));
+
+    return STATUS_SUCCESS;
+}
+
+/* =========================================================================
+ * CsAudioCallbackFunction — Inter-driver audio stream notification
+ * ========================================================================= */
+
+VOID
+Max98373_CsAudioCallbackFunction(
+    _In_opt_ PVOID CallbackContext,
+    _In_opt_ PVOID Argument1,
+    _In_opt_ PVOID Argument2
+    )
+{
+    PMAX98373_DEVICE_CONTEXT devCtx = (PMAX98373_DEVICE_CONTEXT)CallbackContext;
+    CsAudioArg* arg = (CsAudioArg*)Argument1;
+
+    if (!devCtx || !arg) {
+        return;
+    }
+
+    if (Argument2 == &CsAudioArg2) {
+        return;
+    }
+
+    CsAudioArg localArg;
+    RtlZeroMemory(&localArg, sizeof(CsAudioArg));
+    RtlCopyMemory(&localArg, arg, min(arg->argSz, sizeof(CsAudioArg)));
+
+    if (localArg.endpointType != CSAudioEndpointTypeSpeaker) {
+        return;
+    }
+
+    if (localArg.endpointRequest == CSAudioEndpointStop) {
+        if (devCtx->CSAudioRequestsOn) {
+            devCtx->CSAudioRequestsOn = FALSE;
+            Max98373_SetStreamState(devCtx, FALSE);
+        }
+    }
+    else if (localArg.endpointRequest == CSAudioEndpointStart) {
+        if (!devCtx->CSAudioRequestsOn) {
+            devCtx->CSAudioRequestsOn = TRUE;
+            Max98373_SetStreamState(devCtx, TRUE);
+        }
+    }
 }
 
 /* =========================================================================
@@ -360,7 +681,7 @@ Max98373_EvtD0Entry(
     status = Max98373_InitializeHardware(devCtx);
     if (!NT_SUCCESS(status)) {
         KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-            "Max98373Audio: Max98373_InitializeHardware failed 0x%08X - amplifier not configured\n", status));
+            "Max98373Audio: Max98373_InitializeHardware failed 0x%08X\n", status));
         devCtx->PowerActive = FALSE;
         return status;
     }
@@ -369,7 +690,7 @@ Max98373_EvtD0Entry(
 }
 
 /* =========================================================================
- * EvtD0Exit — Power Down & Pop Suppression
+ * EvtD0Exit — Power Down
  * ========================================================================= */
 
 _Use_decl_annotations_
@@ -380,7 +701,6 @@ Max98373_EvtD0Exit(
     )
 {
     PMAX98373_DEVICE_CONTEXT devCtx;
-    NTSTATUS status;
 
     UNREFERENCED_PARAMETER(TargetState);
     PAGED_CODE();
@@ -391,24 +711,7 @@ Max98373_EvtD0Exit(
         "Max98373Audio: EvtD0Exit (powering down)\n"));
 
     devCtx->PowerActive = FALSE;
-    devCtx->Streaming   = FALSE;
-
-    /* Ramp down volume to avoid clicks/pops */
-    Max98373_SetVolume(devCtx, MAX98373_AMP_VOL_MUTE, TRUE);
-
-    /* Disable amplifier block */
-    status = Max98373_SetStreamState(devCtx, FALSE);
-    if (!NT_SUCCESS(status)) {
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
-            "Max98373Audio: EvtD0Exit - SetStreamState failed 0x%08X\n", status));
-    }
-
-    /* Put amplifier into global shutdown (ultra low power standby) */
-    status = Max98373_SetPowerState(devCtx, FALSE);
-    if (!NT_SUCCESS(status)) {
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
-            "Max98373Audio: EvtD0Exit - SetPowerState failed 0x%08X\n", status));
-    }
+    Max98373_SetStreamState(devCtx, FALSE);
 
     return STATUS_SUCCESS;
 }
@@ -431,140 +734,154 @@ Max98373_InitializeHardware(
 
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
-    /* Step 1: Issue Software Reset */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2000_SW_RESET, MAX98373_SW_RESET_ASSERT);
-    if (!NT_SUCCESS(status)) {
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-            "Max98373Audio: Failed to trigger software reset 0x%08X\n", status));
-        return status;
-    }
-
-    /* Wait 10ms for internal calibration and reset completion */
-    delay.QuadPart = -100000LL; /* 10ms */
-    KeDelayExecutionThread(KernelMode, FALSE, &delay);
-
-    /* Step 2: Read Revision ID to verify silicon presence */
+    /* Verify device presence by reading RevID */
     status = I2cReadRegister8(DevCtx->SpbTarget, MAX98373_REVID_REG, &revId);
     if (!NT_SUCCESS(status)) {
         KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-            "Max98373Audio: Failed to read MAX98373 revision ID 0x%08X - device not present\n", status));
+            "Max98373Audio: Failed to read revision ID 0x%08X\n", status));
         return status;
     }
     DevCtx->RevisionId = revId;
-    if (revId != MAX98373_REV_ID_VALUE) {
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-            "Max98373Audio: Unexpected MAX98373 revision ID 0x%02X (expected 0x%02X)\n",
-            revId, MAX98373_REV_ID_VALUE));
-        return STATUS_DEVICE_NOT_READY;
-    }
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-        "Max98373Audio: Detected MAX98373 silicon revision 0x%02X\n", revId));
+        "Max98373Audio: Detected MAX98373 silicon revision 0x%02X (UID=%d, Role=%d)\n",
+        revId, DevCtx->UID, DevCtx->SpeakerRole));
 
-    /* Step 3: Pin Drive Strength & Thermal Configuration */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R201E_PIN_DRIVE_STRENGTH, 0x55);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2014_THERM_WARN_THRESH, 0x10);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2015_THERM_SHDN_THRESH, 0x27);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2016_THERM_HYSTERESIS, 0x01);
-    if (!NT_SUCCESS(status)) return status;
-
-    /* Step 3.5: IV Sense & TX Slot Hi-Z Masking (Critical for Intel ADSP SSP1 bus sharing) */
-    UINT16 hizMask = (UINT16)~((1 << DevCtx->VmonSlot) | (1 << DevCtx->ImonSlot));
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2020_PCM_TX_HIZ_EN_1, (UINT8)(hizMask & 0xFF));
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2021_PCM_TX_HIZ_EN_2, (UINT8)((hizMask >> 8) & 0xFF));
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2022_PCM_TX_SRC_1,
-        (UINT8)(((DevCtx->ImonSlot & 0xF) << 4) | (DevCtx->VmonSlot & 0xF)));
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2023_PCM_TX_SRC_2, 0x00);
-    if (!NT_SUCCESS(status)) return status;
-
-    /* Step 4: Digital Audio Interface (DAI) - 32-bit I2S at 64x fs (Standard ChromeOS / Intel ADSP SSP) */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG,
-                      MAX98373_PCM_MODE_CFG_CHANSZ_32 | MAX98373_PCM_FMT_I2S);
-    if (!NT_SUCCESS(status)) return status;
-
-    /* Clock Ratio: 64x fs (2 slots x 32 bits = 64 BCLKs per frame, 3.072 MHz BCLK) */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_64);
-    if (!NT_SUCCESS(status)) return status;
-
-    /* Sample Rate: 48 kHz */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2027_PCM_SR_SETUP_1, MAX98373_PCM_SR_48KHZ);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2028_PCM_SR_SETUP_2, 0x88);
-    if (!NT_SUCCESS(status)) return status;
-
-    /* Step 5: Speaker Path & Channel Mapping */
-    /* Enable PCM Rx channels 0 and 1 (both Left and Right slots active) and Tx channel */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x03);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202C_PCM_TX_EN, 0x01);
-    if (!NT_SUCCESS(status)) return status;
-
-    /* Speaker source: Left (0x00), Right (0x40), Mono Mix (0x80) */
-    if (DevCtx->SpeakerRole == SPEAKER_ROLE_RIGHT) {
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x40); /* Right channel (Slot 1) */
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01); /* Slot 1 */
-        if (!NT_SUCCESS(status)) return status;
-    } else if (DevCtx->SpeakerRole == SPEAKER_ROLE_LEFT) {
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x00); /* Left channel (Slot 0) */
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01); /* Slot 1 */
-        if (!NT_SUCCESS(status)) return status;
-    } else {
-        /* Stereo fallback: mix Left + Right so both speakers play */
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x80);
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
-        if (!NT_SUCCESS(status)) return status;
+    /* Step 1: Base init registers from CoolStar opengmaxcodec */
+    for (ULONG i = 0; i < ARRAYSIZE(c_Max98373_InitRegs); i++) {
+        status = I2cWriteRegister8(DevCtx->SpbTarget, c_Max98373_InitRegs[i].reg, c_Max98373_InitRegs[i].val);
+        if (!NT_SUCCESS(status)) {
+            KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
+                "Max98373Audio: Failed writing init reg 0x%04X (val 0x%02X): 0x%08X\n",
+                c_Max98373_InitRegs[i].reg, c_Max98373_InitRegs[i].val, status));
+            return status;
+        }
     }
 
-    /* Step 6: Amplifier Path Gain & Digital Volume Control */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203E_AMP_PATH_GAIN, 0x0A); /* +18.0 dB gain */
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203D_AMP_DIG_VOL_CTRL, MAX98373_AMP_VOL_0DB); /* 0 dB */
+    /* Step 2: Digital volume (0x0C = 12, proven safe & unmuted) and analog path gain */
+    UINT16 digitalVolume = 12;
+    UINT16 digitalGain = 0;
+    UINT16 digitalMaxGain = 0;
+
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203D_AMP_DIG_VOL_CTRL, (UINT8)(digitalVolume & 0x7F));
     if (!NT_SUCCESS(status)) return status;
 
-    /* Step 6.5: DSP Configuration - Enable DC blocker, dither, and IV-sense ADC */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203F_AMP_DSP_CFG, 0x03);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2041_AMP_CFG, 0x03);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2046_IV_SENSE_ADC_DSP_CFG, 0xF7);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2047_IV_SENSE_ADC_EN, 0x03);
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203E_AMP_PATH_GAIN, (UINT8)(((digitalGain & 0xF) << 4) | (digitalMaxGain & 0xF)));
     if (!NT_SUCCESS(status)) return status;
 
-    /* Step 7: Limiter & Dynamic Headroom Protection */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20B1_BDE_L4_CFG_1, 0x06);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20D1_DHT_CFG, 0x01);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20D4_DHT_EN, 0x01);
+    /* Step 3: Query ACPI _DSD properties (maxim,spkfb-slot-no, maxim,vmon-slot-no, etc.) */
+    UINT16 spkfb_slot_no = 0;
+    if (!NT_SUCCESS(Max98373_GetIntegerProperty(DevCtx->Device, "maxim,spkfb-slot-no", &spkfb_slot_no))) {
+        spkfb_slot_no = 2;
+    }
+
+    UINT16 vmon_slot_no = 0;
+    UINT16 imon_slot_no = 0;
+    BOOLEAN useDefaults = FALSE;
+
+    if (!NT_SUCCESS(Max98373_GetIntegerProperty(DevCtx->Device, "maxim,vmon-slot-no", &vmon_slot_no))) {
+        useDefaults = TRUE;
+    }
+    if (!NT_SUCCESS(Max98373_GetIntegerProperty(DevCtx->Device, "maxim,imon-slot-no", &imon_slot_no))) {
+        useDefaults = TRUE;
+    }
+
+    UINT16 interleave_mode = 0;
+    if (useDefaults) {
+        if (DevCtx->UID == 0) {
+            vmon_slot_no = 4;
+            imon_slot_no = 5;
+        } else {
+            vmon_slot_no = 6;
+            imon_slot_no = 7;
+        }
+        interleave_mode = 0;
+    } else {
+        if (NT_SUCCESS(Max98373_GetIntegerProperty(DevCtx->Device, "maxim,interleave_mode", &interleave_mode))) {
+            interleave_mode = 1;
+        } else {
+            interleave_mode = 0;
+        }
+    }
+
+    DevCtx->VmonSlot = (UINT8)vmon_slot_no;
+    DevCtx->ImonSlot = (UINT8)imon_slot_no;
+
+    /* Step 4: Clock ratio & channel size */
+    UINT16 fmt = MAX98373_PCM_MODE_CFG_CHANSZ_16;
+    UINT16 clkRatio = 0x06;
+
+    if (vmon_slot_no < 4) {
+        if ((vmon_slot_no % 2) == 0) {
+            fmt = MAX98373_PCM_MODE_CFG_CHANSZ_32;
+            clkRatio = 0x08;
+        } else {
+            fmt = MAX98373_PCM_MODE_CFG_CHANSZ_24;
+            clkRatio = 0x07;
+        }
+    }
+
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, (UINT8)clkRatio);
     if (!NT_SUCCESS(status)) return status;
 
-    /* Step 8: Auto restart configuration (all restart bits active) */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FE_DEVICE_AUTO_RESTART_CFG, 0x0F);
+    /* Step 5: PCM TX Hi-Z masking (keep slots 0-3 Hi-Z so audio playback slots are unobstructed) */
+    UINT16 temp = (UINT16)~((1 << vmon_slot_no) | (1 << imon_slot_no));
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2020_PCM_TX_HIZ_EN_1, (UINT8)(temp & 0xFF));
     if (!NT_SUCCESS(status)) return status;
 
-    /* Step 9: Power up chip and enable speaker amplifier stage */
-    status = Max98373_SetPowerState(DevCtx, TRUE);
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2021_PCM_TX_HIZ_EN_2, (UINT8)((temp >> 8) | 0xFF00));
     if (!NT_SUCCESS(status)) return status;
 
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, MAX98373_AMP_ENABLE);
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2022_PCM_TX_SRC_1, (UINT8)(((imon_slot_no & 0xF) << 4) | (vmon_slot_no & 0xF)));
     if (!NT_SUCCESS(status)) return status;
 
-    status = Max98373_SetVolume(DevCtx, MAX98373_AMP_VOL_0DB, FALSE);
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2023_PCM_TX_SRC_2, (UINT8)spkfb_slot_no);
     if (!NT_SUCCESS(status)) return status;
 
+    /* Step 6: TDM Mode 0 PCM format & sample rate */
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG, (UINT8)(MAX98373_PCM_FORMAT_TDM_MODE0 << MAX98373_PCM_MODE_CFG_FORMAT_SHIFT));
+    if (!NT_SUCCESS(status)) return status;
+
+    status = I2cUpdateRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG, (UINT8)MAX98373_PCM_MODE_CFG_CHANSZ_MASK, (UINT8)fmt);
+    if (!NT_SUCCESS(status)) return status;
+
+    status = I2cUpdateRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG, (UINT8)MAX98373_PCM_TX_CH_INTERLEAVE_MASK, (UINT8)(interleave_mode ? MAX98373_PCM_TX_CH_INTERLEAVE_MASK : 0));
+    if (!NT_SUCCESS(status)) return status;
+
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2028_PCM_SR_SETUP_2, (UINT8)(interleave_mode != 0 ? 0x85 : 0x88));
+    if (!NT_SUCCESS(status)) return status;
+
+    /* Step 7: PCM to Speaker Mono Mix Channel Routing */
+    BOOLEAN isRight = FALSE;
+    if (DevCtx->SpeakerRole == SPEAKER_ROLE_RIGHT) {
+        isRight = TRUE;
+    } else if (DevCtx->SpeakerRole == SPEAKER_ROLE_LEFT) {
+        isRight = FALSE;
+    } else {
+        isRight = (DevCtx->UID == 1);
+    }
+
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, (UINT8)(isRight ? 0x40 : 0x00));
+    if (!NT_SUCCESS(status)) return status;
+
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
+    if (!NT_SUCCESS(status)) return status;
+
+    /* Step 8: Power up output stage (GLOBAL_SHDN = 1 -> delay 2ms -> AMP_EN = 1) */
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FF_GLOBAL_SHDN, 0x01);
+    if (!NT_SUCCESS(status)) return status;
+
+    delay.QuadPart = -20000LL; /* 2ms */
+    KeDelayExecutionThread(KernelMode, FALSE, &delay);
+
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x01);
+    if (!NT_SUCCESS(status)) return status;
+
+    DevCtx->PowerActive = TRUE;
     DevCtx->Streaming = TRUE;
 
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-        "Max98373Audio: Hardware initialization complete (Amp Powered On)\n"));
+        "Max98373Audio: Hardware initialization complete (UID=%d, isRight=%d, vmon=%d, imon=%d, fmt=0x%02X, clkRatio=0x%02X)\n",
+        DevCtx->UID, isRight, vmon_slot_no, imon_slot_no, fmt, clkRatio));
 
     return STATUS_SUCCESS;
 }
@@ -601,106 +918,38 @@ Max98373_SetStreamState(
     _In_ BOOLEAN Start
     )
 {
-    NTSTATUS status;
+    NTSTATUS status = STATUS_SUCCESS;
     LARGE_INTEGER delay;
 
     PAGED_CODE();
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
     if (Start) {
-        /* Power on global chip first */
-        status = Max98373_SetPowerState(DevCtx, TRUE);
-        if (!NT_SUCCESS(status)) return status;
-
-        delay.QuadPart = -10000LL; /* 1ms delay for rail ramp */
-        KeDelayExecutionThread(KernelMode, FALSE, &delay);
-
-        /* Step 1: Re-apply IV-sense TX Hi-Z and source registers */
-        UINT16 hizMask = (UINT16)~((1 << DevCtx->VmonSlot) | (1 << DevCtx->ImonSlot));
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2020_PCM_TX_HIZ_EN_1, (UINT8)(hizMask & 0xFF));
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2021_PCM_TX_HIZ_EN_2, (UINT8)((hizMask >> 8) & 0xFF));
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2022_PCM_TX_SRC_1,
-            (UINT8)(((DevCtx->ImonSlot & 0xF) << 4) | (DevCtx->VmonSlot & 0xF)));
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2023_PCM_TX_SRC_2, 0x00);
-        if (!NT_SUCCESS(status)) return status;
-
-        /* Step 2: Re-apply DAI format: 32-bit I2S at 64x fs (Standard ChromeOS / Intel ADSP SSP) */
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG,
-                          MAX98373_PCM_MODE_CFG_CHANSZ_32 | MAX98373_PCM_FMT_I2S);
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_64);
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2027_PCM_SR_SETUP_1, MAX98373_PCM_SR_48KHZ);
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2028_PCM_SR_SETUP_2, 0x88);
-        if (!NT_SUCCESS(status)) return status;
-
-        /* Step 3: Speaker channel slot routing */
-        if (DevCtx->SpeakerRole == SPEAKER_ROLE_RIGHT) {
-            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x40); /* Slot 1 */
-            if (!NT_SUCCESS(status)) return status;
-            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01); /* Slot 1 */
-            if (!NT_SUCCESS(status)) return status;
-        } else if (DevCtx->SpeakerRole == SPEAKER_ROLE_LEFT) {
-            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x00); /* Slot 0 */
-            if (!NT_SUCCESS(status)) return status;
-            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01); /* Slot 1 */
-            if (!NT_SUCCESS(status)) return status;
-        } else {
-            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x80);
-            if (!NT_SUCCESS(status)) return status;
-            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
-            if (!NT_SUCCESS(status)) return status;
+        if (DevCtx->Streaming) {
+            /* Ensure amp stage is powered on and unmuted */
+            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FF_GLOBAL_SHDN, 0x01);
+            delay.QuadPart = -20000LL; /* 2ms */
+            KeDelayExecutionThread(KernelMode, FALSE, &delay);
+            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x01);
+            return STATUS_SUCCESS;
         }
 
-        /* Step 4: Enable PCM RX channels 0 and 1 (both Left and Right slots active) and TX channel */
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x03);
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202C_PCM_TX_EN, 0x01);
-        if (!NT_SUCCESS(status)) return status;
-
-        /* Step 5: Gain, DSP, IV ADC, and Auto-restart */
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203E_AMP_PATH_GAIN, 0x0A);
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203F_AMP_DSP_CFG, 0x03);
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2041_AMP_CFG, 0x03);
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2046_IV_SENSE_ADC_DSP_CFG, 0xF7);
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2047_IV_SENSE_ADC_EN, 0x03);
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FE_DEVICE_AUTO_RESTART_CFG, 0x0F);
-        if (!NT_SUCCESS(status)) return status;
-
-        /* Enable amplifier output stage */
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, MAX98373_AMP_ENABLE);
-        if (!NT_SUCCESS(status)) return status;
-        DevCtx->Streaming = TRUE;
-
-        /* Unmute to configured volume */
-        if (DevCtx->VolumeDb >= MAX98373_AMP_VOL_MUTE) {
-            DevCtx->VolumeDb = MAX98373_AMP_VOL_0DB; /* 0 dB full unmuted */
-        }
-        Max98373_SetVolume(DevCtx, DevCtx->VolumeDb, FALSE);
+        status = Max98373_InitializeHardware(DevCtx);
     } else {
-        /* Soft mute first to erase pop clicks */
-        Max98373_SetVolume(DevCtx, MAX98373_AMP_VOL_MUTE, TRUE);
+        if (!DevCtx->Streaming) {
+            return STATUS_SUCCESS;
+        }
 
-        delay.QuadPart = -10000LL; /* 1ms */
+        /* Disable amp stage */
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x00);
+
+        delay.QuadPart = -20000LL; /* 2ms */
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
 
-        /* Disable amplifier output stage */
-        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, MAX98373_AMP_DISABLE);
-        if (!NT_SUCCESS(status)) return status;
-        DevCtx->Streaming = FALSE;
+        /* Soft reset */
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2000_SW_RESET, 0x01);
 
-        /* Put in global shutdown */
-        status = Max98373_SetPowerState(DevCtx, FALSE);
-        if (!NT_SUCCESS(status)) return status;
+        DevCtx->Streaming = FALSE;
     }
 
     return status;
@@ -721,16 +970,18 @@ Max98373_SetVolume(
     PAGED_CODE();
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
+    DevCtx->Muted = Mute;
     if (!Mute) {
         DevCtx->VolumeDb = VolumeDb;
     }
-    DevCtx->Muted    = Mute;
 
-    return I2cWriteRegister8(
-        DevCtx->SpbTarget,
-        MAX98373_R203D_AMP_DIG_VOL_CTRL,
-        Mute ? MAX98373_AMP_VOL_MUTE : VolumeDb
-    );
+    if (Mute) {
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x00);
+        return I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203D_AMP_DIG_VOL_CTRL, 0x7F);
+    } else {
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203D_AMP_DIG_VOL_CTRL, 12);
+        return I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x01);
+    }
 }
 
 /* =========================================================================
@@ -772,6 +1023,7 @@ Max98373_EvtIoDeviceControl(
     case IOCTL_CSAUDIO_STREAM_START: {
         KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
             "Max98373Audio: IOCTL_CSAUDIO_STREAM_START received\n"));
+        devCtx->CSAudioRequestsOn = TRUE;
         status = Max98373_SetStreamState(devCtx, TRUE);
         break;
     }
@@ -779,6 +1031,7 @@ Max98373_EvtIoDeviceControl(
     case IOCTL_CSAUDIO_STREAM_STOP: {
         KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
             "Max98373Audio: IOCTL_CSAUDIO_STREAM_STOP received\n"));
+        devCtx->CSAudioRequestsOn = FALSE;
         status = Max98373_SetStreamState(devCtx, FALSE);
         break;
     }
