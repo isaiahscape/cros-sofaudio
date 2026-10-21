@@ -14,13 +14,13 @@ Abstract:
 #ifndef _CSAUDIOACP3X_SPEAKERWAVTABLE_H_
 #define _CSAUDIOACP3X_SPEAKERWAVTABLE_H_
 
-// To keep the code simple assume device supports only 48KHz, 32-bit, stereo (PCM and NON-PCM)
+// To keep the code simple assume device supports only 48KHz, 16-bit, stereo (PCM and NON-PCM)
 
 #define SPEAKER_DEVICE_MAX_CHANNELS                 2       // Max Channels.
 
 #define SPEAKER_HOST_MAX_CHANNELS                   2       // Max Channels.
-#define SPEAKER_HOST_MIN_BITS_PER_SAMPLE            32      // Min Bits Per Sample
-#define SPEAKER_HOST_MAX_BITS_PER_SAMPLE            32      // Max Bits Per Sample
+#define SPEAKER_HOST_MIN_BITS_PER_SAMPLE            16      // Min Bits Per Sample
+#define SPEAKER_HOST_MAX_BITS_PER_SAMPLE            16      // Max Bits Per Sample
 #define SPEAKER_HOST_MIN_SAMPLE_RATE                48000   // Min Sample Rate
 #define SPEAKER_HOST_MAX_SAMPLE_RATE                48000   // Max Sample Rate
 
@@ -49,12 +49,12 @@ KSDATAFORMAT_WAVEFORMATEXTENSIBLE SpeakerHostPinSupportedDeviceFormats[] =
                 WAVE_FORMAT_EXTENSIBLE,
                 2,
                 48000,
-                384000,
-                8,
-                32,
+                192000,
+                4,
+                16,
                 sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX)
             },
-            32,
+            16,
             KSAUDIO_SPEAKER_STEREO,
             STATICGUIDOF(KSDATAFORMAT_SUBTYPE_PCM)
         }

@@ -340,8 +340,10 @@ Nau8825_EvtD0Entry(
 
     status = Nau8825_InitializeHardware(devCtx);
     if (!NT_SUCCESS(status)) {
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
-            "Nau8825Audio: Nau8825_InitializeHardware returned 0x%08X\n", status));
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
+            "Nau8825Audio: Nau8825_InitializeHardware failed 0x%08X - codec not configured\n", status));
+        devCtx->PowerActive = FALSE;
+        return status;
     }
 
     /* Enable Jack Detection Engine */
@@ -365,6 +367,7 @@ Nau8825_EvtD0Exit(
     )
 {
     PNAU8825_DEVICE_CONTEXT devCtx;
+    NTSTATUS status;
 
     UNREFERENCED_PARAMETER(TargetState);
     PAGED_CODE();
@@ -377,11 +380,23 @@ Nau8825_EvtD0Exit(
     devCtx->PowerActive = FALSE;
 
     /* Ramp down headphone volume smoothly */
-    Nau8825_SetVolume(devCtx, NAU8825_HP_VOL_MIN, TRUE);
+    status = Nau8825_SetVolume(devCtx, NAU8825_HP_VOL_MIN, TRUE);
+    if (!NT_SUCCESS(status)) {
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
+            "Nau8825Audio: EvtD0Exit - SetVolume failed 0x%08X\n", status));
+    }
 
     /* Power down DAC and ADC paths */
-    Nau8825_SetPlaybackState(devCtx, FALSE);
-    Nau8825_SetCaptureState(devCtx, FALSE);
+    status = Nau8825_SetPlaybackState(devCtx, FALSE);
+    if (!NT_SUCCESS(status)) {
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
+            "Nau8825Audio: EvtD0Exit - SetPlaybackState failed 0x%08X\n", status));
+    }
+    status = Nau8825_SetCaptureState(devCtx, FALSE);
+    if (!NT_SUCCESS(status)) {
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
+            "Nau8825Audio: EvtD0Exit - SetCaptureState failed 0x%08X\n", status));
+    }
 
     return STATUS_SUCCESS;
 }
@@ -418,53 +433,72 @@ Nau8825_InitializeHardware(
 
     /* Step 2: Read Device ID */
     status = I2cReadRegister16(DevCtx->SpbTarget, NAU8825_REG_I2C_DEVICE_ID, &deviceId);
-    if (NT_SUCCESS(status)) {
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-            "Nau8825Audio: Silicon Device ID = 0x%04X\n", deviceId));
+    if (!NT_SUCCESS(status)) {
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
+            "Nau8825Audio: Failed to read device ID 0x%08X - device not present\n", status));
+        return status;
+    }
+    if (deviceId != NAU8825_DEVICE_ID_VALUE) {
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
+            "Nau8825Audio: Unexpected device ID 0x%04X (expected 0x%04X)\n",
+            deviceId, NAU8825_DEVICE_ID_VALUE));
+        return STATUS_DEVICE_NOT_READY;
     }
 
     /* Step 3: Configure Clocks & PLL/FLL */
-    Nau8825_ConfigureClocks(DevCtx);
+    status = Nau8825_ConfigureClocks(DevCtx);
+    if (!NT_SUCCESS(status)) return status;
 
-    /* Step 4: Digital Audio Interface (I2S standard, 32-bit slot, slave mode, tristate disabled) */
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL1,
-                       NAU8825_I2S_DL_32 | NAU8825_I2S_DF_I2S);
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL2, 0x0010);
+    /* Step 4: Digital Audio Interface (I2S standard, 16-bit slot, slave mode, tristate disabled) */
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL1,
+                       NAU8825_I2S_DL_16 | NAU8825_I2S_DF_I2S);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL2, 0x0010);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Step 5: Power Control & DAC/ADC Enable */
     /* Enable DACL/DACR, ADC, clock gating */
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
                        NAU8825_ENABLE_DACR | NAU8825_ENABLE_DACL |
                        NAU8825_ENABLE_ADC  | NAU8825_ENABLE_ADC_CLK |
                        NAU8825_ENABLE_DAC_CLK | NAU8825_ENABLE_SAR);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Enable Charge Pump (prevent pop clicks) */
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_CHARGE_PUMP,
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_CHARGE_PUMP,
                        NAU8825_JAMNODCLOW | NAU8825_CHARGE_PUMP_EN);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Enable RDAC clock sync */
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_RDAC,
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_RDAC,
                        NAU8825_RDAC_EN | NAU8825_RDAC_CLK_EN);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Power up output driver stages */
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_POWER_UP_CONTROL,
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_POWER_UP_CONTROL,
                        NAU8825_POWERUP_INTEGR_R | NAU8825_POWERUP_INTEGR_L |
                        NAU8825_POWERUP_DRV_IN_R | NAU8825_POWERUP_DRV_IN_L);
+    if (!NT_SUCCESS(status)) return status;
 
-    I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_POWER_UP_CONTROL,
+    status = I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_POWER_UP_CONTROL,
                     NAU8825_POWERUP_HP_DRV_R | NAU8825_POWERUP_HP_DRV_L,
                     NAU8825_POWERUP_HP_DRV_R | NAU8825_POWERUP_HP_DRV_L);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Disconnect headphone outputs from ground */
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_HSD_CTRL, 0x0000);
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_HSD_CTRL, 0x0000);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Enable HP Boost Driver & Class G comparison */
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_BOOST, NAU8825_HP_BOOST_DIS);
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_CLASSG_CTRL,
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_BOOST, NAU8825_HP_BOOST_DIS);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_CLASSG_CTRL,
                        NAU8825_CLASSG_LDAC_EN | NAU8825_CLASSG_RDAC_EN);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Step 6: Initial Volume Setup (0 dB unmuted) */
-    Nau8825_SetVolume(DevCtx, DevCtx->VolumeStep, FALSE);
+    status = Nau8825_SetVolume(DevCtx, DevCtx->VolumeStep, FALSE);
+    if (!NT_SUCCESS(status)) return status;
 
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
         "Nau8825Audio: Codec hardware initialization complete\n"));
@@ -482,20 +516,29 @@ Nau8825_ConfigureClocks(
     _In_ PNAU8825_DEVICE_CONTEXT DevCtx
     )
 {
+    NTSTATUS status;
     PAGED_CODE();
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
     /* Setup clock divider: Internal VCO / MCLK divider */
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_CLK_DIVIDER, 0x0050);
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_CLK_DIVIDER, 0x0050);
+    if (!NT_SUCCESS(status)) return status;
 
     /* FLL configuration for 48kHz sample rate synthesis */
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL1, 0x0000);
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL2, 0x3126);
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL3, 0x0008);
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL4, 0x8010);
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL5, 0x0000);
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL6, 0x6000);
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL_VCO_RSV, 0x0BC0);
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL1, 0x0000);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL2, 0x3126);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL3, 0x0008);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL4, 0x8010);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL5, 0x0000);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL6, 0x6000);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL_VCO_RSV, 0x0BC0);
+    if (!NT_SUCCESS(status)) return status;
 
     return STATUS_SUCCESS;
 }
@@ -510,26 +553,31 @@ Nau8825_EnableJackDetection(
     _In_ PNAU8825_DEVICE_CONTEXT DevCtx
     )
 {
+    NTSTATUS status;
     PAGED_CODE();
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
     /* Enable Mic Bias: 2.2V low-noise output for headset electret microphones */
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_MIC_BIAS,
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_MIC_BIAS,
                        NAU8825_MICBIAS_POWERUP | NAU8825_MICBIAS_VOLTAGE_2_2V);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Enable SAR ADC for impedance and headset pinout detection */
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_SAR_CTRL,
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_SAR_CTRL,
                        NAU8825_SAR_ADC_EN | 0x0015);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Jack Detect Control: Debounce 250ms for insert, 50ms for eject */
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_JACK_DET_CTRL,
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_JACK_DET_CTRL,
                        NAU8825_JACK_DET_RESTART | (0x04 << 5) | (0x02 << 2));
+    if (!NT_SUCCESS(status)) return status;
 
     /* Unmask Jack Insert, Jack Eject, and Key/Button Interrupts (active low/high) */
     /* Note: In NAU8825 INTERRUPT_MASK, bit = 0 enables, bit = 1 masks */
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_INTERRUPT_MASK,
+    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_INTERRUPT_MASK,
                        (UINT16)~(NAU8825_IRQ_INSERT_EN | NAU8825_IRQ_EJECT_EN |
                                  NAU8825_IRQ_KEY_SHORT_PRESS_EN | NAU8825_IRQ_KEY_RELEASE_EN));
+    if (!NT_SUCCESS(status)) return status;
 
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
         "Nau8825Audio: Jack detection engine enabled\n"));
@@ -548,26 +596,33 @@ Nau8825_SetPlaybackState(
     _In_ BOOLEAN Enable
     )
 {
+    NTSTATUS status;
     PAGED_CODE();
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
     if (Enable) {
-        /* Ensure DAI format is 32-bit I2S and tristate is disabled */
-        I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL1,
-                           NAU8825_I2S_DL_32 | NAU8825_I2S_DF_I2S);
-        I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL2, 0x0010);
+        /* Ensure DAI format is 16-bit I2S and tristate is disabled */
+        status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL1,
+                           NAU8825_I2S_DL_16 | NAU8825_I2S_DF_I2S);
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL2, 0x0010);
+        if (!NT_SUCCESS(status)) return status;
 
         /* Un-mute and power up DACs */
-        I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
+        status = I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
                         NAU8825_ENABLE_DACR | NAU8825_ENABLE_DACL,
                         NAU8825_ENABLE_DACR | NAU8825_ENABLE_DACL);
-        Nau8825_SetVolume(DevCtx, DevCtx->VolumeStep, FALSE);
+        if (!NT_SUCCESS(status)) return status;
+        status = Nau8825_SetVolume(DevCtx, DevCtx->VolumeStep, FALSE);
+        if (!NT_SUCCESS(status)) return status;
         DevCtx->Streaming = TRUE;
     } else {
         /* Soft mute and power down DACs */
-        Nau8825_SetVolume(DevCtx, NAU8825_HP_VOL_MIN, TRUE);
-        I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
+        status = Nau8825_SetVolume(DevCtx, NAU8825_HP_VOL_MIN, TRUE);
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
                         NAU8825_ENABLE_DACR | NAU8825_ENABLE_DACL, 0);
+        if (!NT_SUCCESS(status)) return status;
         DevCtx->Streaming = FALSE;
     }
 
@@ -585,17 +640,20 @@ Nau8825_SetCaptureState(
     _In_ BOOLEAN Enable
     )
 {
+    NTSTATUS status;
     PAGED_CODE();
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
     if (Enable) {
-        I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
+        status = I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
                         NAU8825_ENABLE_ADC | NAU8825_ENABLE_ADC_CLK,
                         NAU8825_ENABLE_ADC | NAU8825_ENABLE_ADC_CLK);
+        if (!NT_SUCCESS(status)) return status;
         DevCtx->CaptureActive = TRUE;
     } else {
-        I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
+        status = I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
                         NAU8825_ENABLE_ADC | NAU8825_ENABLE_ADC_CLK, 0);
+        if (!NT_SUCCESS(status)) return status;
         DevCtx->CaptureActive = FALSE;
     }
 

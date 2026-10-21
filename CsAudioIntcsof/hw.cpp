@@ -75,7 +75,7 @@ CCsAudioSofHW::CCsAudioSofHW(_In_ PRESOURCELIST ResourceList, _In_ PDEVICE_OBJEC
       m_runningCaptureStreams(0),
       m_sampleRate(48000),
       m_channels(2),
-      m_bitsPerSample(32),
+      m_bitsPerSample(16),
       m_pDeviceObject(DeviceObject),
       m_CsAudioAPICallback(NULL),
       m_CsAudioAPICallbackObj(NULL),
@@ -185,8 +185,8 @@ NTSTATUS CCsAudioSofHW::sof_program_dma(eDeviceType deviceType, PMDL mdl, IPortW
     RtlZeroMemory(&streamFormat, sizeof(streamFormat));
     streamFormat.SampleRate = 48000;
     streamFormat.NumberOfChannels = 2;
-    streamFormat.ValidBitsPerSample = 32;
-    streamFormat.ContainerSize = 32;
+    streamFormat.ValidBitsPerSample = 16;
+    streamFormat.ContainerSize = 16;
 
     ULONG totalBytes = mdl ? MmGetMdlByteCount(mdl) : DMA_BUFFER_SIZE;
     if (totalBytes == 0) totalBytes = DMA_BUFFER_SIZE;
@@ -335,7 +335,10 @@ NTSTATUS CCsAudioSofHW::sof_play(eDeviceType deviceType, UINT32 byteCount)
     }
 
     // 2. Notify registered sidecar codec (MAX98373 for speakers, NAU88L25 for headphones)
-    NotifySidecarCodec(arg.endpointType, TRUE);
+    NTSTATUS sidecarStatus = NotifySidecarCodec(arg.endpointType, TRUE);
+    if (!NT_SUCCESS(sidecarStatus)) {
+        DPF(D_TERSE, ("[CsAudioIntcsof] sof_play: sidecar codec notification returned 0x%08X (continuing playback)\n", sidecarStatus));
+    }
 
     return STATUS_SUCCESS;
 }
@@ -353,7 +356,10 @@ NTSTATUS CCsAudioSofHW::sof_stop(eDeviceType deviceType)
     }
 
     // 2. Notify sidecar codec to enter power saving / low power state
-    NotifySidecarCodec(arg.endpointType, FALSE);
+    NTSTATUS sidecarStatus = NotifySidecarCodec(arg.endpointType, FALSE);
+    if (!NT_SUCCESS(sidecarStatus)) {
+        DPF(D_ERROR, ("[CsAudioIntcsof] sof_stop: sidecar codec notification failed 0x%08X\n", sidecarStatus));
+    }
 
     if (deviceType == eSpeakerDevice || deviceType == eHeadphoneDevice) {
         if (m_hRenderStream && m_BusInterface.TriggerDSP) {

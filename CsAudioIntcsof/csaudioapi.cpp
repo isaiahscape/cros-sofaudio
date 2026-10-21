@@ -239,20 +239,22 @@ static NTSTATUS SendIoctlToDeviceInterface(
     return overallStatus;
 }
 
-void CCsAudioSofHW::NotifySidecarCodec(CSAudioEndpointType endpoint, BOOL start)
+NTSTATUS CCsAudioSofHW::NotifySidecarCodec(CSAudioEndpointType endpoint, BOOL start)
 {
     CSAUDIO_STREAM_CONFIG config;
     RtlZeroMemory(&config, sizeof(config));
     config.SampleRate = 48000;
-    config.BitsPerSample = 32;
+    config.BitsPerSample = 16;
     config.Channels = 2;
-    config.SlotWidth = 32;
+    config.SlotWidth = 16;
 
     ULONG ioctl = start ? IOCTL_CSAUDIO_STREAM_START : IOCTL_CSAUDIO_STREAM_STOP;
+    NTSTATUS status = STATUS_SUCCESS;
+    NTSTATUS overallStatus = STATUS_SUCCESS;
 
     if (endpoint == CSAudioEndpointTypeSpeaker) {
         // Notify MAX98373 smart amplifier
-        SendIoctlToDeviceInterface(
+        status = SendIoctlToDeviceInterface(
             &GUID_DEVINTERFACE_MAX98373_AMP,
             ioctl,
             &config,
@@ -260,18 +262,27 @@ void CCsAudioSofHW::NotifySidecarCodec(CSAudioEndpointType endpoint, BOOL start)
             NULL,
             0
         );
-        // Also send generic CSAudio codec IOCTL
-        SendIoctlToDeviceInterface(
-            &GUID_DEVINTERFACE_CSAUDIO_CODEC,
-            ioctl,
-            &config,
-            sizeof(config),
-            NULL,
-            0
-        );
+        if (NT_SUCCESS(status)) {
+            overallStatus = STATUS_SUCCESS;
+        } else {
+            DPF(D_TERSE, ("[CSAudio] NotifySidecarCodec: MAX98373_AMP IOCTL 0x%08X, falling back to CSAUDIO_CODEC\n", status));
+            status = SendIoctlToDeviceInterface(
+                &GUID_DEVINTERFACE_CSAUDIO_CODEC,
+                ioctl,
+                &config,
+                sizeof(config),
+                NULL,
+                0
+            );
+            if (NT_SUCCESS(status)) {
+                overallStatus = STATUS_SUCCESS;
+            } else {
+                overallStatus = status;
+            }
+        }
     } else if (endpoint == CSAudioEndpointTypeHeadphone || endpoint == CSAudioEndpointTypeMicJack) {
         // Notify NAU88L25 codec
-        SendIoctlToDeviceInterface(
+        status = SendIoctlToDeviceInterface(
             &GUID_DEVINTERFACE_NAU8825_CODEC,
             ioctl,
             &config,
@@ -279,15 +290,27 @@ void CCsAudioSofHW::NotifySidecarCodec(CSAudioEndpointType endpoint, BOOL start)
             NULL,
             0
         );
-        SendIoctlToDeviceInterface(
-            &GUID_DEVINTERFACE_CSAUDIO_CODEC,
-            ioctl,
-            &config,
-            sizeof(config),
-            NULL,
-            0
-        );
+        if (NT_SUCCESS(status)) {
+            overallStatus = STATUS_SUCCESS;
+        } else {
+            DPF(D_TERSE, ("[CSAudio] NotifySidecarCodec: NAU8825_CODEC IOCTL 0x%08X, falling back to CSAUDIO_CODEC\n", status));
+            status = SendIoctlToDeviceInterface(
+                &GUID_DEVINTERFACE_CSAUDIO_CODEC,
+                ioctl,
+                &config,
+                sizeof(config),
+                NULL,
+                0
+            );
+            if (NT_SUCCESS(status)) {
+                overallStatus = STATUS_SUCCESS;
+            } else {
+                overallStatus = status;
+            }
+        }
     }
+
+    return overallStatus;
 }
 
 void CCsAudioSofHW::SendSidecarVolume(CSAudioEndpointType endpoint, LONG volumeLevel, BOOL muted)

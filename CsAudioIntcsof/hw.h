@@ -79,7 +79,7 @@ private:
 
     NTSTATUS CSAudioAPIInit();
     NTSTATUS CSAudioAPIDeinit();
-    void     NotifySidecarCodec(CSAudioEndpointType endpoint, BOOL start);
+    NTSTATUS NotifySidecarCodec(CSAudioEndpointType endpoint, BOOL start);
     void     SendSidecarVolume(CSAudioEndpointType endpoint, LONG volumeLevel, BOOL muted);
 
     CSAudioEndpointType GetCSAudioEndpoint(eDeviceType deviceType);

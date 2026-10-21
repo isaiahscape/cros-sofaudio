@@ -277,9 +277,9 @@ Max98373_EvtPrepareHardware(
                 PWSTR instanceId = (PWSTR)WdfMemoryGetBuffer(mem, NULL);
                 if (instanceId) {
                     if (wcsstr(instanceId, L"\\0")) {
-                        devCtx->SpeakerRole = SPEAKER_ROLE_RIGHT;
-                    } else if (wcsstr(instanceId, L"\\1")) {
                         devCtx->SpeakerRole = SPEAKER_ROLE_LEFT;
+                    } else if (wcsstr(instanceId, L"\\1")) {
+                        devCtx->SpeakerRole = SPEAKER_ROLE_RIGHT;
                     }
                 }
                 WdfObjectDelete(mem);
@@ -349,8 +349,10 @@ Max98373_EvtD0Entry(
 
     status = Max98373_InitializeHardware(devCtx);
     if (!NT_SUCCESS(status)) {
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
-            "Max98373Audio: Max98373_InitializeHardware returned 0x%08X\n", status));
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
+            "Max98373Audio: Max98373_InitializeHardware failed 0x%08X - amplifier not configured\n", status));
+        devCtx->PowerActive = FALSE;
+        return status;
     }
 
     return STATUS_SUCCESS;
@@ -368,6 +370,7 @@ Max98373_EvtD0Exit(
     )
 {
     PMAX98373_DEVICE_CONTEXT devCtx;
+    NTSTATUS status;
 
     UNREFERENCED_PARAMETER(TargetState);
     PAGED_CODE();
@@ -384,10 +387,18 @@ Max98373_EvtD0Exit(
     Max98373_SetVolume(devCtx, MAX98373_AMP_VOL_MUTE, TRUE);
 
     /* Disable amplifier block */
-    Max98373_SetStreamState(devCtx, FALSE);
+    status = Max98373_SetStreamState(devCtx, FALSE);
+    if (!NT_SUCCESS(status)) {
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
+            "Max98373Audio: EvtD0Exit - SetStreamState failed 0x%08X\n", status));
+    }
 
     /* Put amplifier into global shutdown (ultra low power standby) */
-    Max98373_SetPowerState(devCtx, FALSE);
+    status = Max98373_SetPowerState(devCtx, FALSE);
+    if (!NT_SUCCESS(status)) {
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
+            "Max98373Audio: EvtD0Exit - SetPowerState failed 0x%08X\n", status));
+    }
 
     return STATUS_SUCCESS;
 }
@@ -424,69 +435,103 @@ Max98373_InitializeHardware(
 
     /* Step 2: Read Revision ID to verify silicon presence */
     status = I2cReadRegister8(DevCtx->SpbTarget, MAX98373_REVID_REG, &revId);
-    if (NT_SUCCESS(status)) {
-        DevCtx->RevisionId = revId;
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-            "Max98373Audio: Detected MAX98373 silicon revision 0x%02X\n", revId));
-    } else {
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
-            "Max98373Audio: Failed to read revision ID 0x%08X (continuing)\n", status));
+    if (!NT_SUCCESS(status)) {
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
+            "Max98373Audio: Failed to read MAX98373 revision ID 0x%08X - device not present\n", status));
+        return status;
     }
+    DevCtx->RevisionId = revId;
+    if (revId != MAX98373_REV_ID_VALUE) {
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
+            "Max98373Audio: Unexpected MAX98373 revision ID 0x%02X (expected 0x%02X)\n",
+            revId, MAX98373_REV_ID_VALUE));
+        return STATUS_DEVICE_NOT_READY;
+    }
+    KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
+        "Max98373Audio: Detected MAX98373 silicon revision 0x%02X\n", revId));
 
     /* Step 3: Pin Drive Strength & Thermal Configuration */
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R201E_PIN_DRIVE_STRENGTH, 0x55);
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2014_THERM_WARN_THRESH, 0x10);
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2015_THERM_SHDN_THRESH, 0x27);
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2016_THERM_HYSTERESIS, 0x01);
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R201E_PIN_DRIVE_STRENGTH, 0x55);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2014_THERM_WARN_THRESH, 0x10);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2015_THERM_SHDN_THRESH, 0x27);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2016_THERM_HYSTERESIS, 0x01);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Step 4: Digital Audio Interface (DAI) - I2S 48kHz Stereo */
-    /* PCM format: Standard I2S, 32-bit slot width (matches Linux ALSA default 0xC0) */
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG,
-                      MAX98373_PCM_MODE_CFG_CHANSZ_32 | MAX98373_PCM_FMT_I2S);
+    /* PCM format: Standard I2S, 16-bit slot width */
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG,
+                      MAX98373_PCM_MODE_CFG_CHANSZ_16 | MAX98373_PCM_FMT_I2S);
+    if (!NT_SUCCESS(status)) return status;
 
-    /* Clock Ratio: 64x fs (e.g., 3.072 MHz BCLK for 48 kHz stereo) */
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_64);
+    /* Clock Ratio: 32x fs (e.g., 1.536 MHz BCLK for 48 kHz 16-bit stereo) */
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_32);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Sample Rate: 48 kHz */
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2027_PCM_SR_SETUP_1, MAX98373_PCM_SR_48KHZ);
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2028_PCM_SR_SETUP_2, 0x88);
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2027_PCM_SR_SETUP_1, MAX98373_PCM_SR_48KHZ);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2028_PCM_SR_SETUP_2, 0x88);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Step 5: Speaker Path & Channel Mapping */
     /* Enable PCM Rx channels 0 and 1 (Left and Right slots) */
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x03);
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x03);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Speaker source: Left (0x00), Right (0x40), Mono Mix (0x80) */
     if (DevCtx->SpeakerRole == SPEAKER_ROLE_RIGHT) {
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x40); /* Right channel */
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01); /* Slot 1 */
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x40); /* Right channel */
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01); /* Slot 1 */
+        if (!NT_SUCCESS(status)) return status;
     } else if (DevCtx->SpeakerRole == SPEAKER_ROLE_LEFT) {
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x00); /* Left channel */
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01); /* Slot 1 */
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x00); /* Left channel */
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01); /* Slot 1 */
+        if (!NT_SUCCESS(status)) return status;
     } else {
         /* Stereo / fallback: mix Left + Right so both speakers play */
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x80);
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x80);
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
+        if (!NT_SUCCESS(status)) return status;
     }
 
     /* Step 6: Amplifier Path Gain & Digital Volume Control */
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203E_AMP_PATH_GAIN, 0x0A); /* +18.0 dB gain */
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203D_AMP_DIG_VOL_CTRL, MAX98373_AMP_VOL_0DB); /* 0 dB */
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203E_AMP_PATH_GAIN, 0x0A); /* +18.0 dB gain */
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203D_AMP_DIG_VOL_CTRL, MAX98373_AMP_VOL_0DB); /* 0 dB */
+    if (!NT_SUCCESS(status)) return status;
 
     /* Step 6.5: DSP Configuration - Enable DC blocker and dither */
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203F_AMP_DSP_CFG, 0x03);
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2041_AMP_CFG, 0x03);
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203F_AMP_DSP_CFG, 0x03);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2041_AMP_CFG, 0x03);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Step 7: Limiter & Dynamic Headroom Protection */
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20D1_DHT_CFG, 0x01);
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20D4_DHT_EN, 0x01);
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20D1_DHT_CFG, 0x01);
+    if (!NT_SUCCESS(status)) return status;
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20D4_DHT_EN, 0x01);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Step 8: Auto restart configuration (all restart bits active) */
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FE_DEVICE_AUTO_RESTART_CFG, 0x0F);
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FE_DEVICE_AUTO_RESTART_CFG, 0x0F);
+    if (!NT_SUCCESS(status)) return status;
 
     /* Step 9: Power up chip and enable speaker amplifier stage */
-    Max98373_SetPowerState(DevCtx, TRUE);
-    I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, MAX98373_AMP_ENABLE);
-    Max98373_SetVolume(DevCtx, MAX98373_AMP_VOL_0DB, FALSE);
+    status = Max98373_SetPowerState(DevCtx, TRUE);
+    if (!NT_SUCCESS(status)) return status;
+
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, MAX98373_AMP_ENABLE);
+    if (!NT_SUCCESS(status)) return status;
+
+    status = Max98373_SetVolume(DevCtx, MAX98373_AMP_VOL_0DB, FALSE);
+    if (!NT_SUCCESS(status)) return status;
+
     DevCtx->Streaming = TRUE;
 
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
@@ -535,37 +580,54 @@ Max98373_SetStreamState(
 
     if (Start) {
         /* Power on global chip first */
-        Max98373_SetPowerState(DevCtx, TRUE);
+        status = Max98373_SetPowerState(DevCtx, TRUE);
+        if (!NT_SUCCESS(status)) return status;
 
         delay.QuadPart = -10000LL; /* 1ms delay for rail ramp */
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
 
         /* Re-apply DAI format and speaker routing to guarantee active state */
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG,
-                          MAX98373_PCM_MODE_CFG_CHANSZ_32 | MAX98373_PCM_FMT_I2S);
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_64);
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2027_PCM_SR_SETUP_1, MAX98373_PCM_SR_48KHZ);
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2028_PCM_SR_SETUP_2, 0x88);
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG,
+                          MAX98373_PCM_MODE_CFG_CHANSZ_16 | MAX98373_PCM_FMT_I2S);
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, MAX98373_CLOCK_RATIO_32);
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2027_PCM_SR_SETUP_1, MAX98373_PCM_SR_48KHZ);
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2028_PCM_SR_SETUP_2, 0x88);
+        if (!NT_SUCCESS(status)) return status;
 
         if (DevCtx->SpeakerRole == SPEAKER_ROLE_RIGHT) {
-            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x40);
-            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
+            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x40);
+            if (!NT_SUCCESS(status)) return status;
+            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
+            if (!NT_SUCCESS(status)) return status;
         } else if (DevCtx->SpeakerRole == SPEAKER_ROLE_LEFT) {
-            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x00);
-            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
+            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x00);
+            if (!NT_SUCCESS(status)) return status;
+            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
+            if (!NT_SUCCESS(status)) return status;
         } else {
-            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x80);
-            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
+            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, 0x80);
+            if (!NT_SUCCESS(status)) return status;
+            status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
+            if (!NT_SUCCESS(status)) return status;
         }
 
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x03);
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203E_AMP_PATH_GAIN, 0x0A);
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203F_AMP_DSP_CFG, 0x03);
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2041_AMP_CFG, 0x03);
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FE_DEVICE_AUTO_RESTART_CFG, 0x0F);
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202B_PCM_RX_EN, 0x03);
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203E_AMP_PATH_GAIN, 0x0A);
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203F_AMP_DSP_CFG, 0x03);
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2041_AMP_CFG, 0x03);
+        if (!NT_SUCCESS(status)) return status;
+        status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FE_DEVICE_AUTO_RESTART_CFG, 0x0F);
+        if (!NT_SUCCESS(status)) return status;
 
         /* Enable amplifier output stage */
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, MAX98373_AMP_ENABLE);
+        if (!NT_SUCCESS(status)) return status;
         DevCtx->Streaming = TRUE;
 
         /* Unmute to configured volume */
@@ -582,10 +644,12 @@ Max98373_SetStreamState(
 
         /* Disable amplifier output stage */
         status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, MAX98373_AMP_DISABLE);
+        if (!NT_SUCCESS(status)) return status;
         DevCtx->Streaming = FALSE;
 
         /* Put in global shutdown */
-        Max98373_SetPowerState(DevCtx, FALSE);
+        status = Max98373_SetPowerState(DevCtx, FALSE);
+        if (!NT_SUCCESS(status)) return status;
     }
 
     return status;
