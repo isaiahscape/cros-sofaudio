@@ -50,11 +50,12 @@ static const struct max98373_initreg c_Max98373_InitRegs[] = {
     { MAX98373_R20FE_DEVICE_AUTO_RESTART_CFG, 0x0F },
     { MAX98373_R2027_PCM_SR_SETUP_1,          0x08 }, /* 48 kHz standard rate */
     { MAX98373_R2028_PCM_SR_SETUP_2,          0x88 },
-    { MAX98373_R202B_PCM_RX_EN,               0x03 }, /* Enable BOTH Ch0 (Left) and Ch1 (Right) */
+    { MAX98373_R202B_PCM_RX_EN,               0x01 }, /* Global PCM RX enable */
     { MAX98373_R202C_PCM_TX_EN,               0x00 }, /* Disable feedback TX to avoid bus contention */
     { MAX98373_R2020_PCM_TX_HIZ_EN_1,         0xFF }, /* Tri-state all TX slots (Hi-Z) */
     { MAX98373_R2021_PCM_TX_HIZ_EN_2,         0xFF },
     { MAX98373_R203F_AMP_DSP_CFG,             0x03 }, /* DC blocker + dither */
+    { MAX98373_R2041_AMP_CFG,                 0x03 }, /* Standard Class-D amp configuration */
     { MAX98373_R2046_IV_SENSE_ADC_DSP_CFG,    0xF7 },
     { MAX98373_R2047_IV_SENSE_ADC_EN,         0x03 },
     { MAX98373_R20B1_BDE_L4_CFG_1,            0x06 },
@@ -796,40 +797,44 @@ Max98373_InitializeHardware(
     if (!NT_SUCCESS(status)) return status;
 
     /* Step 5: Clock & Format Auto-Lock:
-     * Try candidate DAI configurations matching Alder Lake Intel SSP output:
-     * 1. 0xC0 / 0x04: I2S 32-bit slot, 64x fs (3.072 MHz) [Standard Brya Alder Lake I2S]
-     * 2. 0xC0 / 0x06: I2S 32-bit slot, 128x fs (6.144 MHz)
-     * 3. 0x40 / 0x02: I2S 16-bit slot, 32x fs (1.536 MHz)
-     * 4. 0x58 / 0x06: TDM0 16-bit slot, 128x fs (6.144 MHz)
-     * 5. 0xD8 / 0x08: TDM0 32-bit slot, 256x fs (12.288 MHz)
+     * Try candidate DAI configurations matching Alder Lake Intel SSP1 output:
+     * 1. 0xD8 / 0x08: TDM0 32-bit slot, 256x fs (12.288 MHz) [ADSP Topology Default: 8 slots x 32 bits]
+     * 2. 0xC0 / 0x04: I2S 32-bit slot, 64x fs (3.072 MHz)
+     * 3. 0x58 / 0x06: TDM0 16-bit slot, 128x fs (6.144 MHz)
+     * 4. 0xC0 / 0x06: I2S 32-bit slot, 128x fs (6.144 MHz)
+     * 5. 0x40 / 0x02: I2S 16-bit slot, 32x fs (1.536 MHz)
      */
     static const struct {
         UINT8 fmt;
         UINT8 clkRatio;
         PCSTR name;
     } candidates[] = {
+        { 0xD8, 0x08, "TDM0 32-bit slot, 256x fs (12.288 MHz) [ADSP Topology Default]" },
+        { 0xE0, 0x08, "TDM1 32-bit slot, 256x fs (12.288 MHz) [DSP_A Mode]" },
         { 0xC0, 0x04, "I2S 32-bit slot, 64x fs (3.072 MHz)" },
-        { 0xC0, 0x06, "I2S 32-bit slot, 128x fs (6.144 MHz)" },
-        { 0x40, 0x02, "I2S 16-bit slot, 32x fs (1.536 MHz)" },
         { 0x58, 0x06, "TDM0 16-bit slot, 128x fs (6.144 MHz)" },
-        { 0xD8, 0x08, "TDM0 32-bit slot, 256x fs (12.288 MHz)" }
+        { 0xC0, 0x06, "I2S 32-bit slot, 128x fs (6.144 MHz)" },
+        { 0x40, 0x02, "I2S 16-bit slot, 32x fs (1.536 MHz)" }
     };
 
     UINT8 chosenFmt = candidates[0].fmt;
     UINT8 chosenClk = candidates[0].clkRatio;
 
     for (ULONG i = 0; i < ARRAYSIZE(candidates); i++) {
+        /* Clear any latched interrupt / error flags */
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R200D_INT_FLAG_CLR1, 0xFF);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R200E_INT_FLAG_CLR2, 0xFF);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R200F_INT_FLAG_CLR3, 0xFF);
+
         I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG, candidates[i].fmt);
         I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, candidates[i].clkRatio);
 
-        /* Power cycle output stage */
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FF_GLOBAL_SHDN, 0x01);
-        delay.QuadPart = -20000LL; /* 2ms */
-        KeDelayExecutionThread(KernelMode, FALSE, &delay);
+        /* Enable output stage */
         I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x01);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FF_GLOBAL_SHDN, 0x01);
 
-        /* Delay 5ms for clock monitor evaluation */
-        delay.QuadPart = -50000LL; /* 5ms */
+        /* Delay 25ms for clock monitor evaluation */
+        delay.QuadPart = -250000LL; /* 25ms */
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
 
         intRaw1 = 0;
@@ -853,29 +858,37 @@ Max98373_InitializeHardware(
             /* Disable amp before trying next candidate */
             I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x00);
             I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FF_GLOBAL_SHDN, 0x00);
-            delay.QuadPart = -10000LL; /* 1ms */
+            delay.QuadPart = -20000LL; /* 2ms */
             KeDelayExecutionThread(KernelMode, FALSE, &delay);
         }
     }
 
-    /* If none locked cleanly without error flag, fallback to Candidate 0 (64x fs I2S standard) and power up */
+    /* If none locked cleanly without error flag, fallback to Candidate 0 (TDM0 256x fs) */
     if (!locked) {
         KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
-            "Max98373Audio: No candidate locked without error, falling back to standard I2S 64x fs\n"));
+            "Max98373Audio: No candidate locked without error, forcing TDM0 256x fs\n"));
         I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG, candidates[0].fmt);
         I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, candidates[0].clkRatio);
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FF_GLOBAL_SHDN, 0x01);
-        delay.QuadPart = -20000LL; /* 2ms */
-        KeDelayExecutionThread(KernelMode, FALSE, &delay);
         I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x01);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FF_GLOBAL_SHDN, 0x01);
     }
+
+    /* Wait 30ms for charge pump & PLL lock as specified by Linux driver & datasheet */
+    delay.QuadPart = -300000LL; /* 30ms */
+    KeDelayExecutionThread(KernelMode, FALSE, &delay);
+
+    /* Read final diagnostic registers */
+    UINT8 finalRaw1 = 0, finalState1 = 0, finalFlag1 = 0;
+    I2cReadRegister8(DevCtx->SpbTarget, MAX98373_R2001_INT_RAW1, &finalRaw1);
+    I2cReadRegister8(DevCtx->SpbTarget, MAX98373_R2004_INT_STATE1, &finalState1);
+    I2cReadRegister8(DevCtx->SpbTarget, MAX98373_R2007_INT_FLAG1, &finalFlag1);
 
     DevCtx->PowerActive = TRUE;
     DevCtx->Streaming = TRUE;
 
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-        "Max98373Audio: Hardware stream started (UID=%d, isRight=%d, fmt=0x%02X, clk=0x%02X, locked=%d)\n",
-        DevCtx->UID, isRight, chosenFmt, chosenClk, locked));
+        "Max98373Audio: Hardware stream started (UID=%d, isRight=%d, fmt=0x%02X, clk=0x%02X, locked=%d, RAW1=0x%02X, STATE1=0x%02X, FLAG1=0x%02X)\n",
+        DevCtx->UID, isRight, chosenFmt, chosenClk, locked, finalRaw1, finalState1, finalFlag1));
 
     return STATUS_SUCCESS;
 }
@@ -919,6 +932,9 @@ Max98373_SetStreamState(
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
     if (Start) {
+        if (DevCtx->Streaming) {
+            return STATUS_SUCCESS;
+        }
         status = Max98373_InitializeHardware(DevCtx);
     } else {
         if (!DevCtx->Streaming) {
