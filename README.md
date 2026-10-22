@@ -10,7 +10,11 @@
 
 > [!IMPORTANT]
 > **Mandatory Requirements:**
-> * **Disable Secure Boot:** Secure Boot **must be disabled** in the UEFI firmware settings (e.g. MrChromebox UEFI setup).
+> * **Disable Vulnerable Driver Blocklist (`regedit`):** So that the user won't require disabling Secure Boot anymore just to install this driver, configure this in `regedit`:
+>   * Path: `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\CI\Config`
+>   * `(Optional: New > DWORD (32-bit))` > `VulnerableDriverBlocklistEnable` = `0`
+>   * *(Quick command via Administrator Command Prompt or PowerShell: `reg add "HKLM\SYSTEM\CurrentControlSet\Control\CI\Config" /v VulnerableDriverBlocklistEnable /t REG_DWORD /d 0 /f`)*
+> * **Secure Boot:** Disabling Secure Boot in UEFI firmware settings (e.g. MrChromebox UEFI setup) is **no longer required** if the registry setting above is applied. (If you choose not to apply the registry setting, Secure Boot must be disabled).
 > * **Enable Test Signing:** Windows **must run in Test Mode** (`bcdedit /set testsigning on`) because these custom kernel-mode drivers are test-signed. The installer checks this and can turn it on automatically (a reboot is required).
 
 ---
