@@ -18,6 +18,7 @@
 #include "..\Common\csaudio_codec.h"
 #include "..\Common\i2c_helper.h"
 #include "nau8825_reg.h"
+#include "nau8825_seq.h"
 
 /* Ensure debug prints always emit to kernel debug output in both Release and Debug */
 #ifdef KdPrintEx
@@ -54,6 +55,20 @@ typedef struct _NAU8825_DEVICE_CONTEXT {
     BOOLEAN                 JackInserted;
     BOOLEAN                 MicPresent;       /* 4-pole TRRS detected */
 
+    /* Jack polling (I2C_DEVICE_ID.GPIO2JD1 every NAU_JACK_POLL_MS) */
+    WDFTIMER                JackTimer;
+    WDFWAITLOCK             JackLock;
+    BOOLEAN                 JackKnown;        /* first reading done */
+    volatile BOOLEAN        JackPollStop;     /* set in D0Exit before stopping the timer */
+    BOOLEAN                 JackActiveLow;    /* Config\JackActiveLow (default 0: pin high = plugged) */
+    UINT8                   JackCandidate;    /* debounce: 0/1 = pending new state, 0xFF = none */
+    ULONG                   JackChanges;
+
+    /* Chip identification (Linux nau8825: sw_id = I2C_DEVICE_ID & 3) */
+    UINT16                  DeviceIdReg;
+    UINT8                   SwId;
+    BOOLEAN                 HwInitDone;
+
 } NAU8825_DEVICE_CONTEXT, *PNAU8825_DEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(NAU8825_DEVICE_CONTEXT, GetNau8825Context)
@@ -65,6 +80,8 @@ EVT_WDF_DEVICE_PREPARE_HARDWARE Nau8825_EvtPrepareHardware;
 EVT_WDF_DEVICE_RELEASE_HARDWARE Nau8825_EvtReleaseHardware;
 EVT_WDF_DEVICE_D0_ENTRY Nau8825_EvtD0Entry;
 EVT_WDF_DEVICE_D0_EXIT Nau8825_EvtD0Exit;
+
+EVT_WDF_TIMER Nau8825_EvtJackTimer;
 
 /* Interrupt & WorkItem Callbacks */
 EVT_WDF_INTERRUPT_ISR Nau8825_EvtInterruptIsr;

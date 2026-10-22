@@ -22,5 +22,6 @@ This project owes immense gratitude and credit to **CoolStar** ([@coolstarorg](h
 
 ### Special Thanks
 - **CoolStar** ([github.com/coolstar](https://github.com/coolstar)) - Without CoolStar's work across Chromebook Windows audio, DSP buses, and custom drivers, this project would not exist.
+- **Kier** ([@3kierz](https://github.com/3kierz)) & **Claude** - For diagnosing and fixing the sound output drivers.
 - **MrChromebox** ([mrchromebox.tech](https://mrchromebox.tech)) - For coreboot and UEFI firmware on ChromeOS hardware.
 - **The ChromiumOS Authors & Linux SOF Project** - For open-source hardware documentation, DSP topologies, and Linux driver references.

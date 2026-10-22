@@ -16,7 +16,7 @@ Signature   = "$WINDOWS NT$"
 Class       = System
 ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318}
 Provider    = CoolStar
-DriverVer   = 10/20/2026,1.1.1.0
+DriverVer   = 10/22/2026,18.3.0.0
 CatalogFile = sklhdaudbus.cat
 PnpLockdown = 1
 

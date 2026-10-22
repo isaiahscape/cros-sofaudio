@@ -239,7 +239,9 @@ protected:
 #pragma code_seg()
     BOOL IsRenderDevice()
     {
-        return (m_DeviceType == eSpeakerDevice) ? TRUE : FALSE;
+        // Both render endpoints. (Headphones used to fall through as a
+        // capture device, so its system pin never got a stream slot.)
+        return (m_DeviceType == eSpeakerDevice || m_DeviceType == eHeadphoneDevice) ? TRUE : FALSE;
     }
 
     BOOL IsSystemRenderPin(ULONG nPinId);

@@ -30,7 +30,6 @@ dist/
 tools/
 
 # Signing & Certificate files
-*.cer
 *.pfx
 *.p7b
 *.key
@@ -48,3 +47,5 @@ build_errors.log
 *.VC.db
 *.opendb
 msbuild.binlog
+/volmar-sof-test/*.log
+/volmar-sof-test.zip

@@ -71,6 +71,13 @@ typedef struct _MAX98373_DEVICE_CONTEXT {
     PVOID                   CSAudioAPICallbackObj;
     BOOLEAN                 CSAudioRequestsOn;
 
+    /* Stream state serialisation (callback + IOCTL both start/stop) */
+    WDFWAITLOCK             StateLock;   /* keeps PASSIVE_LEVEL for the I2C I/O */
+    ULONG                   StartCount;
+
+    /* Registry log key: HKLM\SOFTWARE\CrosSofAudio\AmpLeft / AmpRight / Amp<UID> */
+    WCHAR                   LogKey[96];
+
 } MAX98373_DEVICE_CONTEXT, *PMAX98373_DEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(MAX98373_DEVICE_CONTEXT, GetMax98373Context)

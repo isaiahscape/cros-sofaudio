@@ -89,7 +89,9 @@
     <ClInclude Include="..\Common\i2c_helper.h" />
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="Max98373Audio.inf" />
+    <Inf Include="Max98373Audio.inf">
+      <TimeStamp>18.3.0.0</TimeStamp>
+    </Inf>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

@@ -67,9 +67,6 @@ CCsAudioSofHW::CCsAudioSofHW(_In_ PRESOURCELIST ResourceList, _In_ PDEVICE_OBJEC
       m_iDevSpecific(0),
       m_uiDevSpecific(0),
       m_BusInterfaceValid(FALSE),
-      m_hRenderStream(NULL),
-      m_renderStreamTag(0),
-      m_runningRenderStreams(0),
       m_hCaptureStream(NULL),
       m_captureStreamTag(0),
       m_runningCaptureStreams(0),
@@ -83,8 +80,31 @@ CCsAudioSofHW::CCsAudioSofHW(_In_ PRESOURCELIST ResourceList, _In_ PDEVICE_OBJEC
       m_SpeakerFileObject(NULL),
       m_SpeakerDeviceObject(NULL),
       m_HeadphoneFileObject(NULL),
-      m_HeadphoneDeviceObject(NULL)
+      m_HeadphoneDeviceObject(NULL),
+      m_dspBooted(FALSE),
+      m_gprocenWasSet(FALSE),
+      m_gprocenOn(FALSE),
+      m_bootStage(0),
+      m_bootCount(0),
+      m_dspBoxOffset(0),
+      m_dspBoxSize(0),
+      m_hostBoxOffset(0),
+      m_hostBoxSize(0),
+      m_ipcReady(FALSE),
+      m_windowsFromManifest(FALSE),
+      m_mboxDownOffset(0),
+      m_mboxDownSize(0),
+      m_mboxUpOffset(0),
+      m_mboxUpSize(0),
+      m_ipcCount(0),
+      m_ipcTimeouts(0),
+      m_ipcSkippedIrql(0),
+      m_notifyCount(0),
+      m_lastIpcCmd(0),
+      m_lastNotifyCmd(0)
 {
+    ExInitializeFastMutex(&m_ipcMutex);
+    RtlZeroMemory(m_path, sizeof(m_path));
     UNREFERENCED_PARAMETER(ResourceList);
     PAGED_CODE();
 
@@ -145,20 +165,30 @@ NTSTATUS CCsAudioSofHW::sof_init()
         );
     }
 
+    // Boot Sound Open Firmware on the DSP (milestone 1: FW_READY only).
+    // A failed boot is logged to HKLM\SOFTWARE\CrosSofAudio\DspBoot but must
+    // not stop the device from starting, so the result is ignored here.
+    (void)sof_boot_dsp();
+
     return STATUS_SUCCESS;
 }
 
 NTSTATUS CCsAudioSofHW::sof_deinit()
 {
-    if (m_hRenderStream && m_BusInterface.FreeStream) {
-        m_BusInterface.FreeStream(m_BusInterface.Context, m_hRenderStream);
-        m_hRenderStream = NULL;
+    for (ULONG p = 0; p < SOF_PATH_COUNT; p++) {
+        if (m_path[p].hStream && m_BusInterface.FreeStream) {
+            m_BusInterface.FreeStream(m_BusInterface.Context, m_path[p].hStream);
+            m_path[p].hStream = NULL;
+        }
     }
 
     if (m_hCaptureStream && m_BusInterface.FreeStream) {
         m_BusInterface.FreeStream(m_BusInterface.Context, m_hCaptureStream);
         m_hCaptureStream = NULL;
     }
+
+    // Stall, reset and power off the DSP core if we booted it.
+    sof_dsp_power_down();
 
     if (m_BusInterfaceValid && m_BusInterface.SetDSPPowerState) {
         m_BusInterface.SetDSPPowerState(m_BusInterface.Context, PowerDeviceD3);
@@ -194,23 +224,25 @@ NTSTATUS CCsAudioSofHW::sof_program_dma(eDeviceType deviceType, PMDL mdl, IPortW
     if (numBlocks <= 0) numBlocks = 1;
 
     if (deviceType == eSpeakerDevice || deviceType == eHeadphoneDevice) {
-        if (!m_hRenderStream && m_BusInterface.GetRenderStream) {
+        SOF_RENDER_PATH* rp = &m_path[sof_path_for(deviceType)];
+        rp->bufBytes = totalBytes;
+        if (!rp->hStream && m_BusInterface.GetRenderStream) {
             NTSTATUS status = m_BusInterface.GetRenderStream(
                 m_BusInterface.Context,
                 streamFormat,
-                &m_hRenderStream,
-                &m_renderStreamTag
+                &rp->hStream,
+                &rp->tag
             );
             if (!NT_SUCCESS(status)) {
                 return status;
             }
         }
 
-        if (m_hRenderStream && m_BusInterface.PrepareDSP) {
+        if (rp->hStream && m_BusInterface.PrepareDSP) {
             PVOID bdlBuf = NULL;
             NTSTATUS status = m_BusInterface.PrepareDSP(
                 m_BusInterface.Context,
-                m_hRenderStream,
+                rp->hStream,
                 totalBytes,
                 numBlocks,
                 &bdlBuf
@@ -308,38 +340,79 @@ NTSTATUS CCsAudioSofHW::sof_program_dma(eDeviceType deviceType, PMDL mdl, IPortW
     return STATUS_SUCCESS;
 }
 
+/*
+ * Which DSP render path an endpoint uses.
+ * Speakers use their own pipeline (SSP1 -> MAX98373) once it exists; if it
+ * could not be created, the speaker endpoint falls back to the headset
+ * pipeline as in milestone 2 so the machine is never left without sound.
+ */
+ULONG CCsAudioSofHW::sof_path_for(_In_ eDeviceType deviceType)
+{
+    if (deviceType == eHeadphoneDevice) return SOF_PATH_HP;
+    if (deviceType == eSpeakerDevice) {
+        if (m_path[SOF_PATH_SPK].pipelineReady || !m_path[SOF_PATH_HP].pipelineReady)
+            return SOF_PATH_SPK;
+        return SOF_PATH_HP;
+    }
+    return SOF_PATH_NONE;
+}
+
+/* Sidecar codec that sits behind a render path. */
+static CSAudioEndpointType PathEndpoint(ULONG path)
+{
+    return (path == SOF_PATH_SPK) ? CSAudioEndpointTypeSpeaker : CSAudioEndpointTypeHeadphone;
+}
+
+void CCsAudioSofHW::NotifyCodecs(_In_ CSAudioEndpointType endpointType, _In_ BOOLEAN start)
+{
+    CsAudioArg arg;
+    RtlZeroMemory(&arg, sizeof(CsAudioArg));
+    arg.argSz = sizeof(CsAudioArg);
+    arg.endpointType = endpointType;
+    arg.endpointRequest = start ? CSAudioEndpointStart : CSAudioEndpointStop;
+
+    if (m_CsAudioAPICallback) {
+        ExNotifyCallback(m_CsAudioAPICallback, &arg, &CsAudioArg2);
+    }
+    if (KeGetCurrentIrql() == PASSIVE_LEVEL) {
+        NTSTATUS st = NotifySidecarCodec(endpointType, start);
+        if (!NT_SUCCESS(st) && st != STATUS_DEVICE_NOT_CONNECTED) {
+            DPF(D_TERSE, ("[CsAudioIntcsof] sidecar codec notification returned 0x%08X\n", st));
+        }
+    }
+}
+
 NTSTATUS CCsAudioSofHW::sof_play(eDeviceType deviceType, UINT32 byteCount)
 {
     UNREFERENCED_PARAMETER(byteCount);
 
     if (deviceType == eSpeakerDevice || deviceType == eHeadphoneDevice) {
-        if (m_hRenderStream && m_BusInterface.TriggerDSP) {
-            m_BusInterface.TriggerDSP(m_BusInterface.Context, m_hRenderStream, TRUE);
+        ULONG path = sof_path_for(deviceType);
+        SOF_RENDER_PATH* rp = &m_path[path];
+        BOOLEAN first = (rp->running == 0);
+
+        // Linux order: BE hw_params + PCM_PARAMS, host DMA start, then the
+        // DSP trigger (SSP clocks start), then the codec/amp power-up.
+        if (first && rp->pipelineReady) {
+            (void)sof_stream_prepare(path);
         }
-        InterlockedIncrement16(&m_runningRenderStreams);
+        if (rp->hStream && m_BusInterface.TriggerDSP) {
+            m_BusInterface.TriggerDSP(m_BusInterface.Context, rp->hStream, TRUE);
+        }
+        if (first && rp->paramsSet) {
+            (void)sof_stream_trigger_start(path);
+        }
+        InterlockedIncrement16(&rp->running);
+
+        if (first) {
+            NotifyCodecs(PathEndpoint(path), TRUE);
+        }
     } else {
         if (m_hCaptureStream && m_BusInterface.TriggerDSP) {
             m_BusInterface.TriggerDSP(m_BusInterface.Context, m_hCaptureStream, TRUE);
         }
         InterlockedIncrement16(&m_runningCaptureStreams);
-    }
-
-    // 1. Notify listeners on CsAudioCallbackAPI
-    CsAudioArg arg;
-    RtlZeroMemory(&arg, sizeof(CsAudioArg));
-    arg.argSz = sizeof(CsAudioArg);
-    arg.endpointType = GetCSAudioEndpoint(deviceType);
-    arg.endpointRequest = CSAudioEndpointStart;
-    if (m_CsAudioAPICallback) {
-        ExNotifyCallback(m_CsAudioAPICallback, &arg, &CsAudioArg2);
-    }
-
-    // 2. Notify registered sidecar codec (MAX98373 for speakers, NAU88L25 for headphones)
-    if (KeGetCurrentIrql() == PASSIVE_LEVEL) {
-        NTSTATUS sidecarStatus = NotifySidecarCodec(arg.endpointType, TRUE);
-        if (!NT_SUCCESS(sidecarStatus)) {
-            DPF(D_TERSE, ("[CsAudioIntcsof] sof_play: sidecar codec notification returned 0x%08X (continuing playback)\n", sidecarStatus));
-        }
+        NotifyCodecs(GetCSAudioEndpoint(deviceType), TRUE);
     }
 
     return STATUS_SUCCESS;
@@ -348,12 +421,37 @@ NTSTATUS CCsAudioSofHW::sof_play(eDeviceType deviceType, UINT32 byteCount)
 NTSTATUS CCsAudioSofHW::sof_stop(eDeviceType deviceType)
 {
     if (deviceType == eSpeakerDevice || deviceType == eHeadphoneDevice) {
-        if (m_runningRenderStreams <= 0) {
+        ULONG path = sof_path_for(deviceType);
+        SOF_RENDER_PATH* rp = &m_path[path];
+        if (rp->running <= 0) {
             return STATUS_SUCCESS;
         }
-        InterlockedDecrement16(&m_runningRenderStreams);
-        if (m_hRenderStream && m_BusInterface.TriggerDSP) {
-            m_BusInterface.TriggerDSP(m_BusInterface.Context, m_hRenderStream, FALSE);
+        InterlockedDecrement16(&rp->running);
+        BOOLEAN last = (rp->running == 0);
+
+        if (last && path == SOF_PATH_SPK) {
+            // Amps off while BCLK still runs (no pop, no clock-loss fault),
+            // then snapshot the SSP1 / DMA state for the log.
+            NotifyCodecs(CSAudioEndpointTypeSpeaker, FALSE);
+            sof_diag_snapshot(path, L"SpkStop");
+        }
+        if (last && path == SOF_PATH_HP) {
+            sof_diag_snapshot(path, L"HpStop");
+        }
+        if (last) {
+            (void)sof_stream_trigger_stop(path);    // before host DMA stop (Linux order)
+        }
+        if (rp->hStream && m_BusInterface.TriggerDSP) {
+            m_BusInterface.TriggerDSP(m_BusInterface.Context, rp->hStream, FALSE);
+        }
+        if (last && path == SOF_PATH_HP) {
+            // NAU88L25: DAPM power-down after the stream stops (Linux order).
+            NotifyCodecs(CSAudioEndpointTypeHeadphone, FALSE);
+        }
+        // PCM_FREE + DAI hw_free (stops the SSP clocks) only after the
+        // codec/amps have powered down.
+        if (last) {
+            (void)sof_stream_free(path);
         }
     } else {
         if (m_runningCaptureStreams <= 0) {
@@ -363,24 +461,7 @@ NTSTATUS CCsAudioSofHW::sof_stop(eDeviceType deviceType)
         if (m_hCaptureStream && m_BusInterface.TriggerDSP) {
             m_BusInterface.TriggerDSP(m_BusInterface.Context, m_hCaptureStream, FALSE);
         }
-    }
-
-    // 1. Notify listeners on CsAudioCallbackAPI
-    CsAudioArg arg;
-    RtlZeroMemory(&arg, sizeof(CsAudioArg));
-    arg.argSz = sizeof(CsAudioArg);
-    arg.endpointType = GetCSAudioEndpoint(deviceType);
-    arg.endpointRequest = CSAudioEndpointStop;
-    if (m_CsAudioAPICallback) {
-        ExNotifyCallback(m_CsAudioAPICallback, &arg, &CsAudioArg2);
-    }
-
-    // 2. Notify sidecar codec to enter power saving / low power state
-    if (KeGetCurrentIrql() == PASSIVE_LEVEL) {
-        NTSTATUS sidecarStatus = NotifySidecarCodec(arg.endpointType, FALSE);
-        if (!NT_SUCCESS(sidecarStatus) && sidecarStatus != STATUS_DEVICE_NOT_CONNECTED) {
-            DPF(D_TERSE, ("[CsAudioIntcsof] sof_stop: sidecar codec notification returned 0x%08X\n", sidecarStatus));
-        }
+        NotifyCodecs(GetCSAudioEndpoint(deviceType), FALSE);
     }
 
     return STATUS_SUCCESS;
@@ -388,20 +469,17 @@ NTSTATUS CCsAudioSofHW::sof_stop(eDeviceType deviceType)
 
 NTSTATUS CCsAudioSofHW::sof_current_position(eDeviceType deviceType, UINT32* linkPos, UINT64* linearPos)
 {
+    HANDLE h = NULL;
     if (deviceType == eSpeakerDevice || deviceType == eHeadphoneDevice) {
-        if (m_hRenderStream && m_BusInterface.StreamPosition) {
-            UINT32 pos = m_BusInterface.StreamPosition(m_BusInterface.Context, m_hRenderStream);
-            if (linkPos) *linkPos = pos;
-            if (linearPos) *linearPos = (UINT64)pos;
-            return STATUS_SUCCESS;
-        }
+        h = m_path[sof_path_for(deviceType)].hStream;
     } else {
-        if (m_hCaptureStream && m_BusInterface.StreamPosition) {
-            UINT32 pos = m_BusInterface.StreamPosition(m_BusInterface.Context, m_hCaptureStream);
-            if (linkPos) *linkPos = pos;
-            if (linearPos) *linearPos = (UINT64)pos;
-            return STATUS_SUCCESS;
-        }
+        h = m_hCaptureStream;
+    }
+    if (h && m_BusInterface.StreamPosition) {
+        UINT32 pos = m_BusInterface.StreamPosition(m_BusInterface.Context, h);
+        if (linkPos) *linkPos = pos;
+        if (linearPos) *linearPos = (UINT64)pos;
+        return STATUS_SUCCESS;
     }
 
     if (linkPos) *linkPos = 0;

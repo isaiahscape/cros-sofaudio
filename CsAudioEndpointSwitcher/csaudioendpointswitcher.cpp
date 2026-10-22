@@ -16,8 +16,8 @@
 #include <mmreg.h>
 #include <setupapi.h>
 #include <mmdeviceapi.h>
+#include <initguid.h>                       /* must precede the PKEY header so the key is defined here */
 #include <functiondiscoverykeys_devpkey.h>
-#include <initguid.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <strsafe.h>
@@ -84,6 +84,28 @@ static void LogMsg(const WCHAR* fmt, ...) {
     va_end(args);
 
     OutputDebugStringW(buf);
+
+    /* also append to C:\\ProgramData\\CrosSofAudio\\switcher.log */
+    {
+        WCHAR path[MAX_PATH];
+        DWORD n = GetEnvironmentVariableW(L"ProgramData", path, MAX_PATH);
+        if (n > 0 && n < MAX_PATH - 40) {
+            StringCchCatW(path, MAX_PATH, L"\\CrosSofAudio");
+            CreateDirectoryW(path, NULL);
+            StringCchCatW(path, MAX_PATH, L"\\switcher.log");
+            HANDLE h = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                                   OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (h != INVALID_HANDLE_VALUE) {
+                SYSTEMTIME st; GetLocalTime(&st);
+                char line[1200];
+                int len = _snprintf_s(line, sizeof(line), _TRUNCATE, "%04u-%02u-%02u %02u:%02u:%02u %ls\r\n",
+                                      st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, buf);
+                if (len > 0) { DWORD w; WriteFile(h, line, (DWORD)len, &w, NULL); }
+                CloseHandle(h);
+            }
+        }
+    }
+
     if (g_IsConsoleMode) {
         wprintf(L"%s\n", buf);
         fflush(stdout);
@@ -103,6 +125,7 @@ static BOOL IsOurDevice(const WCHAR* name) {
 
 static void RefreshEndpoints() {
     EnterCriticalSection(&g_Lock);
+    g_SpeakerId[0] = g_HeadphoneId[0] = g_MicArrayId[0] = g_HeadsetMicId[0] = L'\0';
 
     IMMDeviceEnumerator* pEnum = NULL;
     HRESULT hr = CoCreateInstance(
@@ -120,7 +143,7 @@ static void RefreshEndpoints() {
 
     // 1. Scan Render Endpoints (Speakers vs Headphones)
     IMMDeviceCollection* pRenderCol = NULL;
-    if (SUCCEEDED(pEnum->EnumAudioEndpoints(eRender, DEVICE_STATEMASK_ALL, &pRenderCol)) && pRenderCol) {
+    if (SUCCEEDED(pEnum->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE | DEVICE_STATE_DISABLED | DEVICE_STATE_UNPLUGGED, &pRenderCol)) && pRenderCol) {
         UINT count = 0;
         pRenderCol->GetCount(&count);
         for (UINT i = 0; i < count; i++) {
@@ -156,7 +179,7 @@ static void RefreshEndpoints() {
 
     // 2. Scan Capture Endpoints (Mic Array vs Headset Mic)
     IMMDeviceCollection* pCaptureCol = NULL;
-    if (SUCCEEDED(pEnum->EnumAudioEndpoints(eCapture, DEVICE_STATEMASK_ALL, &pCaptureCol)) && pCaptureCol) {
+    if (SUCCEEDED(pEnum->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE | DEVICE_STATE_DISABLED | DEVICE_STATE_UNPLUGGED, &pCaptureCol)) && pCaptureCol) {
         UINT count = 0;
         pCaptureCol->GetCount(&count);
         for (UINT i = 0; i < count; i++) {
@@ -372,6 +395,13 @@ static DWORD WINAPI MonitorWorkerThread(LPVOID lpParam) {
         currentState,
         currentState == CSAUDIO_JACK_UNPLUGGED ? L"UNPLUGGED" :
         (currentState == CSAUDIO_JACK_HEADPHONES_3POLE ? L"3-POLE HEADPHONES" : L"4-POLE HEADSET"));
+
+    // At boot the audio endpoints can appear after this service starts:
+    // wait (up to ~60 s) until our Speakers endpoint is known.
+    for (int i = 0; i < 30 && g_SpeakerId[0] == L'\0'; i++) {
+        if (WaitForSingleObject(g_StopEvent, 2000) == WAIT_OBJECT_0) break;
+        RefreshEndpoints();
+    }
 
     ApplyJackState(currentState);
 

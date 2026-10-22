@@ -30,6 +30,8 @@
 #pragma alloc_text(PAGE, Nau8825_ProcessJackStateChange)
 #endif
 
+static ULONG NauReadConfigDword(_In_ PCWSTR Name, _In_ ULONG Default);
+
 /* =========================================================================
  * DriverEntry
  * ========================================================================= */
@@ -129,6 +131,32 @@ Nau8825_EvtDeviceAdd(
         KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
             "Nau8825Audio: WdfIoQueueCreate failed 0x%08X\n", status));
         return status;
+    }
+
+    /* Jack polling timer (passive level: it does I2C reads) */
+    {
+        WDF_OBJECT_ATTRIBUTES attr;
+        WDF_TIMER_CONFIG timerConfig;
+
+        WDF_OBJECT_ATTRIBUTES_INIT(&attr);
+        attr.ParentObject = device;
+        status = WdfWaitLockCreate(&attr, &devCtx->JackLock);
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
+
+        /* one-shot, re-armed by the callback (passive-level timers are kept non-periodic) */
+        WDF_TIMER_CONFIG_INIT(&timerConfig, Nau8825_EvtJackTimer);
+        timerConfig.AutomaticSerialization = FALSE;
+        WDF_OBJECT_ATTRIBUTES_INIT(&attr);
+        attr.ParentObject = device;
+        attr.ExecutionLevel = WdfExecutionLevelPassive;
+        status = WdfTimerCreate(&timerConfig, &attr, &devCtx->JackTimer);
+        if (!NT_SUCCESS(status)) {
+            KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
+                "Nau8825Audio: jack timer creation failed 0x%08X\n", status));
+            devCtx->JackTimer = NULL;
+        }
     }
 
     /* Create dedicated manual queue to hold pending jack state change notifications */
@@ -370,11 +398,16 @@ Nau8825_EvtD0Entry(
         return STATUS_SUCCESS;
     }
 
-    /* Enable Jack Detection Engine */
-    Nau8825_EnableJackDetection(devCtx);
-
-    /* Initial check of jack insertion status */
+    /* Jack detection: polled (the old interrupt set-up used guessed register
+     * bits and is no longer enabled). First reading is applied immediately. */
+    devCtx->JackActiveLow = NauReadConfigDword(L"JackActiveLow", 0) ? TRUE : FALSE;
+    devCtx->JackKnown = FALSE;
+    devCtx->JackCandidate = 0xFF;
     Nau8825_ProcessJackStateChange(devCtx);
+    devCtx->JackPollStop = FALSE;
+    if (devCtx->JackTimer) {
+        WdfTimerStart(devCtx->JackTimer, WDF_REL_TIMEOUT_IN_MS(NAU_JACK_POLL_MS));
+    }
 
     return STATUS_SUCCESS;
 }
@@ -401,6 +434,11 @@ Nau8825_EvtD0Exit(
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
         "Nau8825Audio: EvtD0Exit (powering down)\n"));
 
+    devCtx->JackPollStop = TRUE;
+    if (devCtx->JackTimer) {
+        WdfTimerStop(devCtx->JackTimer, TRUE);
+        WdfTimerStop(devCtx->JackTimer, TRUE);   /* in case the callback re-armed meanwhile */
+    }
     devCtx->PowerActive = FALSE;
 
     /* Ramp down headphone volume smoothly */
@@ -426,7 +464,189 @@ Nau8825_EvtD0Exit(
 }
 
 /* =========================================================================
- * Nau8825_InitializeHardware — Soft Reset & Register Setup
+ * Codec register log: HKLM\SOFTWARE\CrosSofAudio\Codec
+ * ========================================================================= */
+
+#define NAUL_REG_ROOT  L"\\Registry\\Machine\\SOFTWARE\\CrosSofAudio"
+#define NAUL_REG_LOG   L"\\Registry\\Machine\\SOFTWARE\\CrosSofAudio\\Codec"
+
+static VOID NauLog(_In_ PCWSTR Name, _In_ ULONG Value)
+{
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) return;
+    RtlCreateRegistryKey(RTL_REGISTRY_ABSOLUTE, NAUL_REG_ROOT);
+    RtlCreateRegistryKey(RTL_REGISTRY_ABSOLUTE, NAUL_REG_LOG);
+    RtlWriteRegistryValue(RTL_REGISTRY_ABSOLUTE, NAUL_REG_LOG, Name, REG_DWORD, &Value, sizeof(Value));
+}
+
+static VOID NauLogReg(_In_ PNAU8825_DEVICE_CONTEXT DevCtx, _In_ PCWSTR Name, _In_ UINT16 Reg)
+{
+    UINT16 v = 0;
+    if (NT_SUCCESS(I2cReadRegister16(DevCtx->SpbTarget, Reg, &v))) {
+        NauLog(Name, v);
+    } else {
+        NauLog(Name, 0xDEAD0000u | Reg);
+    }
+}
+
+static VOID NauSnapshot(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
+{
+    NauLogReg(DevCtx, L"R01_ENA_CTRL",      NAUL_ENA_CTRL);
+    NauLogReg(DevCtx, L"R03_CLK_DIVIDER",   NAUL_CLK_DIVIDER);
+    NauLogReg(DevCtx, L"R04_FLL1",          NAUL_FLL1);
+    NauLogReg(DevCtx, L"R05_FLL2",          NAUL_FLL2);
+    NauLogReg(DevCtx, L"R06_FLL3",          NAUL_FLL3);
+    NauLogReg(DevCtx, L"R07_FLL4",          NAUL_FLL4);
+    NauLogReg(DevCtx, L"R08_FLL5",          NAUL_FLL5);
+    NauLogReg(DevCtx, L"R09_FLL6",          NAUL_FLL6);
+    NauLogReg(DevCtx, L"R0C_HSD_CTRL",      NAUL_HSD_CTRL);
+    NauLogReg(DevCtx, L"R0D_JACK_DET_CTRL", NAUL_JACK_DET_CTRL);
+    NauLogReg(DevCtx, L"R1C_I2S_CTRL1",     NAUL_I2S_PCM_CTRL1);
+    NauLogReg(DevCtx, L"R1D_I2S_CTRL2",     NAUL_I2S_PCM_CTRL2);
+    NauLogReg(DevCtx, L"R2C_DAC_CTRL1",     NAUL_DAC_CTRL1);
+    NauLogReg(DevCtx, L"R31_MUTE_CTRL",     NAUL_MUTE_CTRL);
+    NauLogReg(DevCtx, L"R32_HSVOL_CTRL",    NAUL_HSVOL_CTRL);
+    NauLogReg(DevCtx, L"R33_DACL_CTRL",     NAUL_DACL_CTRL);
+    NauLogReg(DevCtx, L"R34_DACR_CTRL",     NAUL_DACR_CTRL);
+    NauLogReg(DevCtx, L"R50_CLASSG_CTRL",   NAUL_CLASSG_CTRL);
+    NauLogReg(DevCtx, L"R58_DEVICE_ID",     NAUL_I2C_DEVICE_ID);
+    NauLogReg(DevCtx, L"R66_BIAS_ADJ",      NAUL_BIAS_ADJ);
+    NauLogReg(DevCtx, L"R73_RDAC",          NAUL_RDAC);
+    NauLogReg(DevCtx, L"R76_BOOST",         NAUL_BOOST);
+    NauLogReg(DevCtx, L"R7F_POWER_UP",      NAUL_POWER_UP_CONTROL);
+    NauLogReg(DevCtx, L"R80_CHARGE_PUMP",   NAUL_CHARGE_PUMP);
+}
+
+static VOID NauSleepMs(_In_ ULONG Ms)
+{
+    LARGE_INTEGER d;
+    d.QuadPart = -10000LL * (LONGLONG)Ms;
+    KeDelayExecutionThread(KernelMode, FALSE, &d);
+}
+
+#define NAU_UPD(reg, mask, val) \
+    do { status = I2cUpdateBits16(DevCtx->SpbTarget, (UINT16)(reg), (UINT16)(mask), (UINT16)(val)); \
+         if (!NT_SUCCESS(status)) { NauLog(L"LastFailedReg", (reg)); return status; } } while (0)
+#define NAU_WR(reg, val) \
+    do { status = I2cWriteRegister16(DevCtx->SpbTarget, (UINT16)(reg), (UINT16)(val)); \
+         if (!NT_SUCCESS(status)) { NauLog(L"LastFailedReg", (reg)); return status; } } while (0)
+
+/*
+ * Jack pin level: I2C_DEVICE_ID.GPIO2JD1 (what Linux nau8825_is_jack_inserted()
+ * reads). On volmar the pin reads HIGH with a plug inserted (seen in the
+ * 18.2.0.3 logs: 0x1a14 at boot without plug, 0x1a94 while playing to
+ * headphones), so "high = inserted" is the default; the registry value
+ * HKLM\SOFTWARE\CrosSofAudio\JackActiveLow = 1 flips it for boards
+ * wired the other way.
+ */
+static BOOLEAN NauJackRead(_In_ PNAU8825_DEVICE_CONTEXT DevCtx, _Out_ BOOLEAN* Inserted, _Out_opt_ UINT16* Raw)
+{
+    UINT16 id = 0;
+    *Inserted = FALSE;
+    if (!DevCtx->SpbTarget) return FALSE;
+    if (!NT_SUCCESS(I2cReadRegister16(DevCtx->SpbTarget, NAUL_I2C_DEVICE_ID, &id))) return FALSE;
+    if (Raw) *Raw = id;
+    BOOLEAN high = (id & NAUL_GPIO2JD1) ? TRUE : FALSE;
+    *Inserted = DevCtx->JackActiveLow ? !high : high;
+    return TRUE;
+}
+
+static BOOLEAN NauJackInserted(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
+{
+    BOOLEAN ins = FALSE;
+    (void)NauJackRead(DevCtx, &ins, NULL);
+    return ins;
+}
+
+static ULONG NauReadConfigDword(_In_ PCWSTR Name, _In_ ULONG Default)
+{
+    ULONG value = Default, def = Default;
+    RTL_QUERY_REGISTRY_TABLE table[2];
+    RtlZeroMemory(table, sizeof(table));
+    table[0].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
+    table[0].Name = (PWSTR)Name;
+    table[0].EntryContext = &value;
+    table[0].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
+    table[0].DefaultData = &def;
+    table[0].DefaultLength = sizeof(def);
+    if (!NT_SUCCESS(RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE,
+            L"\\Registry\\Machine\\SOFTWARE\\CrosSofAudio", table, NULL, NULL)))
+        return Default;
+    return value;
+}
+
+/* nau8825_configure_sysclk(NAU8825_CLK_DIS / NAU8825_CLK_INTERNAL) as done
+ * by system_clock_control() when a stream ends. */
+static NTSTATUS NauSysclkIdle(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
+{
+    NTSTATUS status;
+    if (NauJackInserted(DevCtx)) {
+        /* CLK_INTERNAL: free-running DCO keeps jack/button detection alive */
+        NAU_UPD(NAUL_FLL6, NAUL_DCO_EN, NAUL_DCO_EN);
+        NAU_UPD(NAUL_CLK_DIVIDER, NAUL_CLK_SRC_MASK, NAUL_CLK_SRC_VCO);
+        NAU_UPD(NAUL_CLK_DIVIDER, NAUL_CLK_MCLK_SRC_MASK, 0xF);
+        NAU_UPD(NAUL_FLL1, NAUL_ICTRL_LATCH_MASK | NAUL_FLL_RATIO_MASK, 0x10);
+        NAU_UPD(NAUL_FLL6, NAUL_SDM_EN, NAUL_SDM_EN);
+    } else {
+        /* CLK_DIS: nau8825_configure_mclk_as_sysclk() */
+        NAU_UPD(NAUL_CLK_DIVIDER, NAUL_CLK_SRC_MASK, NAUL_CLK_SRC_MCLK);
+        NAU_UPD(NAUL_FLL6, NAUL_DCO_EN, 0);
+        NAU_UPD(NAUL_FLL1, NAUL_ICTRL_LATCH_MASK, 0);
+    }
+    return STATUS_SUCCESS;
+}
+
+/* nau8825_init_regs() with the volmar coreboot properties. */
+static NTSTATUS NauInitRegs(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
+{
+    NTSTATUS status;
+
+    NAU_WR(NAUL_IIC_ADDR_SET, 0x0001);                         /* latch IIC LSB */
+    NAU_UPD(NAUL_BIAS_ADJ, NAUL_BIAS_VMID, NAUL_BIAS_VMID);   /* bias / VMID */
+    NAU_UPD(NAUL_BOOST, NAUL_GLOBAL_BIAS_EN, NAUL_GLOBAL_BIAS_EN);
+    NAU_UPD(NAUL_BIAS_ADJ, NAUL_BIAS_VMID_SEL_MASK, VOLMAR_VREF_IMPEDANCE << 4);
+    /* boost driver off, automatic short-circuit protection on */
+    NAU_UPD(NAUL_BOOST,
+        NAUL_PRECHARGE_DIS | NAUL_HP_BOOST_DIS | NAUL_HP_BOOST_G_DIS | NAUL_SHORT_SHUTDOWN_EN,
+        NAUL_PRECHARGE_DIS | NAUL_HP_BOOST_DIS | NAUL_HP_BOOST_G_DIS | NAUL_SHORT_SHUTDOWN_EN);
+
+    /* jack detect pin: input, internal pull disabled, active low */
+    NAU_UPD(NAUL_GPIO12_CTRL, NAUL_JKDET_OUTPUT_EN, 0);
+    NAU_UPD(NAUL_GPIO12_CTRL, NAUL_JKDET_PULL_EN, NAUL_JKDET_PULL_EN);
+    NAU_UPD(NAUL_GPIO12_CTRL, NAUL_JKDET_PULL_UP, 0);
+    NAU_UPD(NAUL_JACK_DET_CTRL, NAUL_JACK_POLARITY, 0);
+    NAU_UPD(NAUL_JACK_DET_CTRL, NAUL_JACK_INSERT_DEB_MASK, VOLMAR_JACK_INSERT_DEB << 5);
+    NAU_UPD(NAUL_JACK_DET_CTRL, NAUL_JACK_EJECT_DEB_MASK, VOLMAR_JACK_EJECT_DEB << 2);
+
+    NAU_UPD(NAUL_INTERRUPT_MASK, NAUL_IRQ_PIN_PULLUP | NAUL_IRQ_PIN_PULL_EN,
+            NAUL_IRQ_PIN_PULLUP | NAUL_IRQ_PIN_PULL_EN);
+    NAU_UPD(NAUL_INTERRUPT_MASK, 0x7FF, 0x7FF);   /* jack detection unmasks what it needs */
+
+    NAU_UPD(NAUL_MIC_BIAS, NAUL_MICBIAS_VOLTAGE_MASK, VOLMAR_MICBIAS_VOLTAGE);
+
+    NAU_UPD(NAUL_ADC_RATE, NAUL_ADC_SYNC_DOWN_MASK | NAUL_ADC_SINC4_EN, NAUL_ADC_SYNC_DOWN_64);
+    NAU_UPD(NAUL_DAC_CTRL1, NAUL_DAC_OVERSAMPLE_MASK, NAUL_DAC_OVERSAMPLE_64);
+    if (DevCtx->SwId == NAUL_SW_ID_NAU8825) {
+        NAU_UPD(NAUL_CHARGE_PUMP, NAUL_POWER_DOWN_DACR | NAUL_POWER_DOWN_DACL,
+                NAUL_POWER_DOWN_DACR | NAUL_POWER_DOWN_DACL);
+    }
+    NAU_UPD(NAUL_BIAS_ADJ, NAUL_BIAS_TESTDAC_EN, NAUL_BIAS_TESTDAC_EN);   /* DAC inputs held at 0 */
+    NAU_UPD(NAUL_DAC_CTRL1, NAUL_DAC_CLIP_OFF, NAUL_DAC_CLIP_OFF);
+    NAU_UPD(NAUL_ANALOG_CONTROL_2,
+        NAUL_HP_NON_CLASSG_2X | NAUL_DAC_CAP_MSB | NAUL_DAC_CAP_LSB,
+        NAUL_HP_NON_CLASSG_2X | NAUL_DAC_CAP_MSB | NAUL_DAC_CAP_LSB);
+    NAU_UPD(NAUL_CLASSG_CTRL, NAUL_CLASSG_TIMER_MASK, NAUL_CLASSG_TIMER_64MS);
+    NAU_UPD(NAUL_RDAC, NAUL_RDAC_CLK_DELAY_MASK | NAUL_RDAC_VREF_MASK, (0x2 << 4) | (0x3 << 2));
+    NAU_UPD(NAUL_DACL_CTRL, NAUL_DAC_CH_SEL_MASK, NAUL_DAC_CH_SEL_L);
+    NAU_UPD(NAUL_DACR_CTRL, NAUL_DAC_CH_SEL_MASK, NAUL_DAC_CH_SEL_R);
+    NAU_UPD(NAUL_LEFT_TIME_SLOT, NAUL_DIS_FS_SHORT_DET, NAUL_DIS_FS_SHORT_DET);
+    NAU_UPD(NAUL_CHARGE_PUMP, NAUL_ADCOUT_DS_MASK, 0);
+
+    return STATUS_SUCCESS;
+}
+
+/* =========================================================================
+ * Nau8825_InitializeHardware — reset, identify, Linux init_regs, clock idle.
+ * The headphone path stays powered down until a stream starts.
  * ========================================================================= */
 
 _Use_decl_annotations_
@@ -436,135 +656,150 @@ Nau8825_InitializeHardware(
     )
 {
     NTSTATUS status;
-    LARGE_INTEGER delay;
     UINT16 deviceId = 0;
 
     PAGED_CODE();
 
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
-    /* Step 1: Issue Software Reset (Write 0x0000 to Reset Register 0x00) */
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_RESET, 0x0000);
+    DevCtx->HwInitDone = FALSE;
+    DevCtx->Streaming = FALSE;
+
+    /* nau8825_reset_chip(): write the reset register twice */
+    NAU_WR(NAUL_RESET, 0x0000);
+    NAU_WR(NAUL_RESET, 0x0000);
+    NauSleepMs(10);
+
+    status = I2cReadRegister16(DevCtx->SpbTarget, NAUL_I2C_DEVICE_ID, &deviceId);
     if (!NT_SUCCESS(status)) {
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-            "Nau8825Audio: Soft reset failed 0x%08X\n", status));
+        NauLog(L"InitStatus", (ULONG)status);
         return status;
     }
-
-    /* Wait 10ms for reset completion and internal LDO settling */
-    delay.QuadPart = -100000LL; /* 10ms */
-    KeDelayExecutionThread(KernelMode, FALSE, &delay);
-
-    /* Step 2: Read Device ID */
-    status = I2cReadRegister16(DevCtx->SpbTarget, NAU8825_REG_I2C_DEVICE_ID, &deviceId);
-    if (!NT_SUCCESS(status)) {
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-            "Nau8825Audio: Failed to read device ID 0x%08X - device not present\n", status));
-        return status;
-    }
-    if (deviceId != NAU8825_DEVICE_ID_VALUE) {
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-            "Nau8825Audio: Unexpected device ID 0x%04X (expected 0x%04X)\n",
-            deviceId, NAU8825_DEVICE_ID_VALUE));
-        return STATUS_DEVICE_NOT_READY;
+    DevCtx->DeviceIdReg = deviceId;
+    DevCtx->SwId = (UINT8)(deviceId & NAUL_SOFTWARE_ID_MASK);
+    NauLog(L"DeviceIdReg", deviceId);
+    NauLog(L"SwId", DevCtx->SwId);
+    if (DevCtx->SwId != NAUL_SW_ID_NAU8825 && DevCtx->SwId != NAUL_SW_ID_NAU8825C) {
+        /* Linux refuses other ids; keep going as plain NAU8825 but record it */
+        NauLog(L"SwIdUnknown", 1);
+        DevCtx->SwId = NAUL_SW_ID_NAU8825;
     }
 
-    /* Step 3: Configure Clocks & PLL/FLL */
-    status = Nau8825_ConfigureClocks(DevCtx);
-    if (!NT_SUCCESS(status)) return status;
+    status = NauInitRegs(DevCtx);
+    if (!NT_SUCCESS(status)) { NauLog(L"InitStatus", (ULONG)status); return status; }
 
-    /* Step 4: Digital Audio Interface (I2S standard, 16-bit slot, slave mode, tristate disabled) */
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL1,
-                       NAU8825_I2S_DL_16 | NAU8825_I2S_DF_I2S);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL2, 0x0010);
-    if (!NT_SUCCESS(status)) return status;
+    status = NauSysclkIdle(DevCtx);
+    if (!NT_SUCCESS(status)) { NauLog(L"InitStatus", (ULONG)status); return status; }
 
-    /* Step 5: Power Control & DAC/ADC Enable */
-    /* Enable DACL/DACR, ADC, clock gating */
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
-                       NAU8825_ENABLE_DACR | NAU8825_ENABLE_DACL |
-                       NAU8825_ENABLE_ADC  | NAU8825_ENABLE_ADC_CLK |
-                       NAU8825_ENABLE_DAC_CLK | NAU8825_ENABLE_SAR);
-    if (!NT_SUCCESS(status)) return status;
-
-    /* Enable Charge Pump (prevent pop clicks) */
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_CHARGE_PUMP,
-                       NAU8825_JAMNODCLOW | NAU8825_CHARGE_PUMP_EN);
-    if (!NT_SUCCESS(status)) return status;
-
-    /* Enable RDAC clock sync */
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_RDAC,
-                       NAU8825_RDAC_EN | NAU8825_RDAC_CLK_EN);
-    if (!NT_SUCCESS(status)) return status;
-
-    /* Power up output driver stages */
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_POWER_UP_CONTROL,
-                       NAU8825_POWERUP_INTEGR_R | NAU8825_POWERUP_INTEGR_L |
-                       NAU8825_POWERUP_DRV_IN_R | NAU8825_POWERUP_DRV_IN_L);
-    if (!NT_SUCCESS(status)) return status;
-
-    status = I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_POWER_UP_CONTROL,
-                    NAU8825_POWERUP_HP_DRV_R | NAU8825_POWERUP_HP_DRV_L,
-                    NAU8825_POWERUP_HP_DRV_R | NAU8825_POWERUP_HP_DRV_L);
-    if (!NT_SUCCESS(status)) return status;
-
-    /* Disconnect headphone outputs from ground */
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_HSD_CTRL, 0x0000);
-    if (!NT_SUCCESS(status)) return status;
-
-    /* Enable HP Boost Driver & Class G comparison */
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_BOOST, NAU8825_HP_BOOST_DIS);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_CLASSG_CTRL,
-                       NAU8825_CLASSG_LDAC_EN | NAU8825_CLASSG_RDAC_EN);
-    if (!NT_SUCCESS(status)) return status;
-
-    /* Step 6: Initial Volume Setup (0 dB unmuted) */
-    status = Nau8825_SetVolume(DevCtx, DevCtx->VolumeStep, FALSE);
-    if (!NT_SUCCESS(status)) return status;
-
-    KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-        "Nau8825Audio: Codec hardware initialization complete\n"));
-
+    DevCtx->HwInitDone = TRUE;
+    NauLog(L"InitStatus", 0);
     return STATUS_SUCCESS;
 }
 
-/* =========================================================================
- * Nau8825_ConfigureClocks — Master Clock & FLL Setup for 48kHz
- * ========================================================================= */
-
+/* Kept for reference; clocks are now configured per stream (NauPlaybackOn). */
 _Use_decl_annotations_
 NTSTATUS
 Nau8825_ConfigureClocks(
     _In_ PNAU8825_DEVICE_CONTEXT DevCtx
     )
 {
-    NTSTATUS status;
+    UNREFERENCED_PARAMETER(DevCtx);
     PAGED_CODE();
-    if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
+    return STATUS_SUCCESS;
+}
 
-    /* Setup clock divider: Internal VCO / MCLK divider */
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_CLK_DIVIDER, 0x0050);
-    if (!NT_SUCCESS(status)) return status;
+/* Stream start: dai_fmt + hw_params + sysclk FLL_BLK + set_pll + DAPM up. */
+static NTSTATUS NauPlaybackOn(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
+{
+    NTSTATUS status;
 
-    /* FLL configuration for 48kHz sample rate synthesis */
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL1, 0x0000);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL2, 0x3126);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL3, 0x0008);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL4, 0x8010);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL5, 0x0000);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL6, 0x6000);
-    if (!NT_SUCCESS(status)) return status;
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_FLL_VCO_RSV, 0x0BC0);
-    if (!NT_SUCCESS(status)) return status;
+    /* set_dai_fmt(I2S | NB_NF | CBC_CFC) and hw_params(32-bit) */
+    NAU_UPD(NAUL_I2S_PCM_CTRL1,
+        NAUL_I2S_DL_MASK | NAUL_I2S_DF_MASK | NAUL_I2S_BP_MASK | NAUL_I2S_PCMB_MASK,
+        NAUL_I2S_DL_32 | NAUL_I2S_DF_I2S);
+    NAU_UPD(NAUL_I2S_PCM_CTRL2, NAUL_I2S_MS_MASK, 0);          /* clock consumer */
+    NAU_UPD(NAUL_CLK_DIVIDER, NAUL_CLK_DAC_SRC_MASK, VOLMAR_DAC_CLK_SRC);
+
+    /* sysclk NAU8825_CLK_FLL_BLK: FLL reference = BCLK, max gain error */
+    NAU_UPD(NAUL_FLL3, NAUL_FLL_CLK_SRC_MASK | NAUL_GAIN_ERR_MASK,
+            NAUL_FLL_CLK_SRC_BLK | (0xF << 12));
+
+    /* set_pll(BCLK 3.072 MHz -> 12.288 MHz): nau8825_fll_apply() */
+    NAU_UPD(NAUL_CLK_DIVIDER, NAUL_CLK_SRC_MASK | NAUL_CLK_MCLK_SRC_MASK,
+            NAUL_CLK_SRC_MCLK | VOLMAR_FLL_MCLK_SRC);
+    NAU_UPD(NAUL_FLL1, NAUL_FLL_RATIO_MASK | NAUL_ICTRL_LATCH_MASK,
+            VOLMAR_FLL_RATIO | (0x6 << 10));
+    if (DevCtx->SwId == NAUL_SW_ID_NAU8825) {
+        NAU_WR(NAUL_FLL2, 0x0000);                               /* 16-bit fraction = 0 */
+    } else {
+        NAU_WR(NAUL_FLL2_LOWER, 0x0000);                         /* 24-bit fraction = 0 */
+        NAU_WR(NAUL_FLL2_UPPER, 0x0000);
+    }
+    NAU_UPD(NAUL_FLL3, NAUL_FLL_INTEGER_MASK, VOLMAR_FLL_INT);
+    NAU_UPD(NAUL_FLL4, NAUL_FLL_REF_DIV_MASK, VOLMAR_FLL_REF_DIV << 10);
+    NAU_UPD(NAUL_FLL5, NAUL_FLL_CLK_SW_MASK, 0);                 /* divided VCO input */
+    NAU_UPD(NAUL_FLL6, NAUL_DCO_EN, 0);                          /* no free running */
+    /* fraction == 0: loop filter off, accumulator mode */
+    NAU_UPD(NAUL_FLL5, NAUL_FLL_PDB_DAC_EN | NAUL_FLL_LOOP_FTR_EN | NAUL_FLL_FTR_SW_MASK,
+            NAUL_FLL_FTR_SW_ACCU);
+    NAU_UPD(NAUL_FLL6, NAUL_SDM_EN | NAUL_CUTOFF500, 0);
+    NauSleepMs(2);
+    NAU_UPD(NAUL_CLK_DIVIDER, NAUL_CLK_SRC_MASK, NAUL_CLK_SRC_VCO);
+
+    /* DAPM power-up order (supplies, DACs, then PGA_S subsequences 0..10) */
+    NAU_UPD(NAUL_ENA_CTRL, NAUL_ENABLE_DAC_CLK, NAUL_ENABLE_DAC_CLK);         /* DDAC Clock */
+    NAU_UPD(NAUL_ENA_CTRL, NAUL_ENABLE_DACL | NAUL_ENABLE_DACR,
+            NAUL_ENABLE_DACL | NAUL_ENABLE_DACR);                             /* DDACL/R */
+    NAU_UPD(NAUL_CLASSG_CTRL, NAUL_CLASSG_LDAC_EN | NAUL_CLASSG_RDAC_EN,
+            NAUL_CLASSG_LDAC_EN | NAUL_CLASSG_RDAC_EN);                       /* 0: HP amp L/R */
+    NAU_UPD(NAUL_CHARGE_PUMP, NAUL_CHARGE_PUMP_EN, NAUL_CHARGE_PUMP_EN);      /* 1: Charge Pump */
+    NauSleepMs(10);                                                           /*    let it ramp */
+    NAU_UPD(NAUL_CHARGE_PUMP, NAUL_JAMNODCLOW, NAUL_JAMNODCLOW);
+    NAU_UPD(NAUL_RDAC, NAUL_RDAC_EN, NAUL_RDAC_EN);                           /* 2: ADACL/R */
+    NAU_UPD(NAUL_RDAC, NAUL_RDAC_CLK_EN, NAUL_RDAC_CLK_EN);                   /* 3: ADAC clocks */
+    NAU_UPD(NAUL_POWER_UP_CONTROL, NAUL_PU_OUT_STAGE1, NAUL_PU_OUT_STAGE1);   /* 4 */
+    NAU_UPD(NAUL_POWER_UP_CONTROL, NAUL_PU_OUT_STAGE2, NAUL_PU_OUT_STAGE2);   /* 5 */
+    NAU_UPD(NAUL_POWER_UP_CONTROL, NAUL_PU_OUT_STAGE3, NAUL_PU_OUT_STAGE3);   /* 6 */
+    /* 7: Output DAC PRE_PMU - let the DAC signal through */
+    NAU_UPD(NAUL_BIAS_ADJ, NAUL_BIAS_TESTDAC_EN, 0);
+    NAU_UPD(NAUL_CHARGE_PUMP, NAUL_POWER_DOWN_DACR | NAUL_POWER_DOWN_DACL,
+            (DevCtx->SwId == NAUL_SW_ID_NAU8825) ? 0 : (NAUL_POWER_DOWN_DACR | NAUL_POWER_DOWN_DACL));
+    NAU_UPD(NAUL_HSD_CTRL, NAUL_HSD_HPL_GND | NAUL_HSD_HPR_GND, 0);           /* 8: unground HP */
+    NAU_UPD(NAUL_BOOST, NAUL_HP_BOOST_DIS, 0);                                /* 9: HP boost on */
+    NAU_UPD(NAUL_CLASSG_CTRL, NAUL_CLASSG_EN, NAUL_CLASSG_EN);                /* 10: Class G */
+
+    /* 0 dB headphone volume, unmuted (reset default); DSP volume is -20 dB */
+    NAU_UPD(NAUL_HSVOL_CTRL, NAUL_HP_MUTE | NAUL_HPL_MUTE | NAUL_HPR_MUTE |
+            (NAUL_HP_VOL_MASK << NAUL_HPL_VOL_SFT) | NAUL_HP_VOL_MASK, 0);
 
     return STATUS_SUCCESS;
+}
+
+/* Stream stop: DAPM power-down in reverse order, then idle clock. */
+static NTSTATUS NauPlaybackOff(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
+{
+    NTSTATUS status;
+
+    NAU_UPD(NAUL_CLASSG_CTRL, NAUL_CLASSG_EN, 0);                             /* 10 */
+    NAU_UPD(NAUL_BOOST, NAUL_HP_BOOST_DIS, NAUL_HP_BOOST_DIS);                /* 9 */
+    NAU_UPD(NAUL_HSD_CTRL, NAUL_HSD_HPL_GND | NAUL_HSD_HPR_GND,
+            NAUL_HSD_HPL_GND | NAUL_HSD_HPR_GND);                             /* 8 */
+    NAU_UPD(NAUL_POWER_UP_CONTROL, NAUL_PU_OUT_STAGE3, 0);                    /* 6 */
+    NAU_UPD(NAUL_POWER_UP_CONTROL, NAUL_PU_OUT_STAGE2, 0);                    /* 5 */
+    NAU_UPD(NAUL_POWER_UP_CONTROL, NAUL_PU_OUT_STAGE1, 0);                    /* 4 */
+    /* 7: Output DAC POST_PMD */
+    NAU_UPD(NAUL_BIAS_ADJ, NAUL_BIAS_TESTDAC_EN, NAUL_BIAS_TESTDAC_EN);
+    NAU_UPD(NAUL_CHARGE_PUMP, NAUL_POWER_DOWN_DACR | NAUL_POWER_DOWN_DACL,
+            (DevCtx->SwId == NAUL_SW_ID_NAU8825) ? (NAUL_POWER_DOWN_DACR | NAUL_POWER_DOWN_DACL) : 0);
+    NAU_UPD(NAUL_RDAC, NAUL_RDAC_CLK_EN, 0);                                  /* 3 */
+    NAU_UPD(NAUL_RDAC, NAUL_RDAC_EN, 0);                                      /* 2 */
+    NAU_UPD(NAUL_CHARGE_PUMP, NAUL_JAMNODCLOW, 0);                            /* 1: PRE_PMD */
+    NAU_UPD(NAUL_CHARGE_PUMP, NAUL_CHARGE_PUMP_EN, 0);
+    NAU_UPD(NAUL_CLASSG_CTRL, NAUL_CLASSG_LDAC_EN | NAUL_CLASSG_RDAC_EN, 0);  /* 0 */
+    NAU_UPD(NAUL_ENA_CTRL, NAUL_ENABLE_DACL | NAUL_ENABLE_DACR, 0);
+    NAU_UPD(NAUL_ENA_CTRL, NAUL_ENABLE_DAC_CLK, 0);
+
+    return NauSysclkIdle(DevCtx);                                             /* System Clock PMD */
 }
 
 /* =========================================================================
@@ -591,10 +826,8 @@ Nau8825_EnableJackDetection(
                        NAU8825_SAR_ADC_EN | 0x0015);
     if (!NT_SUCCESS(status)) return status;
 
-    /* Jack Detect Control: Debounce 250ms for insert, 50ms for eject */
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_JACK_DET_CTRL,
-                       NAU8825_JACK_DET_RESTART | (0x04 << 5) | (0x02 << 2));
-    if (!NT_SUCCESS(status)) return status;
+    /* JACK_DET_CTRL (polarity, debounce) is set by NauInitRegs() exactly as
+     * Linux does; the old fixed write here overwrote it and is gone. */
 
     /* Unmask Jack Insert, Jack Eject, and Key/Button Interrupts (active low/high) */
     /* Note: In NAU8825 INTERRUPT_MASK, bit = 0 enables, bit = 1 masks */
@@ -610,7 +843,7 @@ Nau8825_EnableJackDetection(
 }
 
 /* =========================================================================
- * Nau8825_SetPlaybackState — Enable / Disable Headphone DAC Output
+ * Nau8825_SetPlaybackState — Linux-order headphone path power up / down
  * ========================================================================= */
 
 _Use_decl_annotations_
@@ -624,33 +857,26 @@ Nau8825_SetPlaybackState(
     PAGED_CODE();
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
-    if (Enable) {
-        /* Ensure DAI format is 16-bit I2S and tristate is disabled */
-        status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL1,
-                           NAU8825_I2S_DL_16 | NAU8825_I2S_DF_I2S);
+    if (!DevCtx->HwInitDone) {
+        status = Nau8825_InitializeHardware(DevCtx);
         if (!NT_SUCCESS(status)) return status;
-        status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_I2S_PCM_CTRL2, 0x0010);
-        if (!NT_SUCCESS(status)) return status;
+    }
 
-        /* Un-mute and power up DACs */
-        status = I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
-                        NAU8825_ENABLE_DACR | NAU8825_ENABLE_DACL,
-                        NAU8825_ENABLE_DACR | NAU8825_ENABLE_DACL);
-        if (!NT_SUCCESS(status)) return status;
-        status = Nau8825_SetVolume(DevCtx, DevCtx->VolumeStep, FALSE);
-        if (!NT_SUCCESS(status)) return status;
-        DevCtx->Streaming = TRUE;
+    if (Enable) {
+        if (DevCtx->Streaming) return STATUS_SUCCESS;
+        status = NauPlaybackOn(DevCtx);
+        NauLog(L"PlaybackOnStatus", (ULONG)status);
+        NauLog(L"JackInserted", NauJackInserted(DevCtx));
+        NauSnapshot(DevCtx);                 /* register state while playing */
+        if (NT_SUCCESS(status)) DevCtx->Streaming = TRUE;
     } else {
-        /* Soft mute and power down DACs */
-        status = Nau8825_SetVolume(DevCtx, NAU8825_HP_VOL_MIN, TRUE);
-        if (!NT_SUCCESS(status)) return status;
-        status = I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
-                        NAU8825_ENABLE_DACR | NAU8825_ENABLE_DACL, 0);
-        if (!NT_SUCCESS(status)) return status;
+        if (!DevCtx->Streaming) return STATUS_SUCCESS;
+        status = NauPlaybackOff(DevCtx);
+        NauLog(L"PlaybackOffStatus", (ULONG)status);
         DevCtx->Streaming = FALSE;
     }
 
-    return STATUS_SUCCESS;
+    return status;
 }
 
 /* =========================================================================
@@ -685,7 +911,12 @@ Nau8825_SetCaptureState(
 }
 
 /* =========================================================================
- * Nau8825_SetVolume — Smooth Anti-Pop Headphone Volume Ramping
+ * Nau8825_SetVolume — headphone mute only for now
+ *
+ * The old code wrote the level into the wrong bit fields (it could set the
+ * HPL/HPR mute bits by accident). Until the Windows volume mapping is
+ * verified, the codec stays at 0 dB and only mute is honoured; loudness is
+ * set by the DSP volume (-20 dB).
  * ========================================================================= */
 
 _Use_decl_annotations_
@@ -696,26 +927,16 @@ Nau8825_SetVolume(
     _In_ BOOLEAN Mute
     )
 {
-    UINT16 regVal;
     PAGED_CODE();
 
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
-    if (VolumeStep > NAU8825_HP_VOL_MIN) {
-        VolumeStep = NAU8825_HP_VOL_MIN;
-    }
-
     DevCtx->VolumeStep = VolumeStep;
     DevCtx->Muted      = Mute;
 
-    if (Mute) {
-        regVal = NAU8825_HPL_MUTE | NAU8825_HPR_MUTE |
-                 ((UINT16)VolumeStep << 8) | VolumeStep;
-    } else {
-        regVal = ((UINT16)VolumeStep << 8) | VolumeStep;
-    }
-
-    return I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_HSVOL_CTRL, regVal);
+    return I2cUpdateBits16(DevCtx->SpbTarget, NAUL_HSVOL_CTRL,
+        (UINT16)(NAUL_HPL_MUTE | NAUL_HPR_MUTE),
+        (UINT16)(Mute ? (NAUL_HPL_MUTE | NAUL_HPR_MUTE) : 0));
 }
 
 /* =========================================================================
@@ -728,62 +949,61 @@ Nau8825_ProcessJackStateChange(
     _In_ PNAU8825_DEVICE_CONTEXT DevCtx
     )
 {
-    UINT16 irqStatus = 0;
-    UINT16 sarStatus = 0;
-    CSAUDIO_JACK_STATE newJackState = CSAUDIO_JACK_UNPLUGGED;
-    NTSTATUS status;
+    BOOLEAN inserted = FALSE;
+    UINT16 raw = 0;
+    BOOLEAN changed = FALSE;
+    CSAUDIO_JACK_STATE newJackState;
 
     PAGED_CODE();
 
-    if (!DevCtx->SpbTarget) return;
+    if (!DevCtx->SpbTarget || !DevCtx->JackLock) return;
 
-    /* Read and clear interrupt status */
-    status = I2cReadRegister16(DevCtx->SpbTarget, NAU8825_REG_IRQ_STATUS, &irqStatus);
-    if (!NT_SUCCESS(status)) return;
+    WdfWaitLockAcquire(DevCtx->JackLock, NULL);
 
-    /* Clear the interrupt latch */
-    I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_INT_CLR_KEY_STATUS, 0xFFFF);
-
-    /* Check if a jack is currently inserted */
-    if (irqStatus & NAU8825_JACK_INSERT_DETECTED) {
-        DevCtx->JackInserted = TRUE;
-
-        /* Read SAR status register to determine if microphone is present */
-        status = I2cReadRegister16(DevCtx->SpbTarget, NAU8825_REG_SARDOUT_RAM_STATUS, &sarStatus);
-        if (NT_SUCCESS(status) && (sarStatus & NAU8825_MIC_DETECTED_STATUS)) {
-            newJackState = CSAUDIO_JACK_HEADSET_4POLE; /* TRRS headset with microphone */
-            DevCtx->MicPresent = TRUE;
-            KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-                "Nau8825Audio: TRRS 4-pole Headset with Microphone detected!\n"));
-        } else {
-            newJackState = CSAUDIO_JACK_HEADPHONES_3POLE; /* Standard TRS headphones */
-            DevCtx->MicPresent = FALSE;
-            KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-                "Nau8825Audio: TRS 3-pole Stereo Headphones detected (no mic)\n"));
-        }
-    } else if (irqStatus & NAU8825_JACK_EJECT_DETECTED) {
-        DevCtx->JackInserted = FALSE;
-        DevCtx->MicPresent   = FALSE;
-        newJackState         = CSAUDIO_JACK_UNPLUGGED;
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-            "Nau8825Audio: Headphone Jack Unplugged / Ejected\n"));
-    } else {
-        /* Check for button events */
-        if (irqStatus & NAU8825_KEY_SHORT_PRESS) {
-            KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-                "Nau8825Audio: Headset button pressed\n"));
-        }
+    if (!NauJackRead(DevCtx, &inserted, &raw)) {
+        WdfWaitLockRelease(DevCtx->JackLock);
         return;
     }
 
-    DevCtx->CurrentJackState = newJackState;
+    if (!DevCtx->JackKnown) {
+        /* first reading after power-up: take it as is */
+        DevCtx->JackKnown = TRUE;
+        DevCtx->JackInserted = inserted;
+        DevCtx->JackCandidate = 0xFF;
+        changed = TRUE;
+    } else if (inserted == DevCtx->JackInserted) {
+        DevCtx->JackCandidate = 0xFF;          /* bounce went away */
+    } else if (DevCtx->JackCandidate == (UINT8)inserted) {
+        /* same new level on two polls in a row -> accept */
+        DevCtx->JackInserted = inserted;
+        DevCtx->JackCandidate = 0xFF;
+        changed = TRUE;
+    } else {
+        DevCtx->JackCandidate = (UINT8)inserted;
+    }
 
-    /* Complete all pending notification requests in JackNotificationQueue */
-    {
+    if (!changed) {
+        WdfWaitLockRelease(DevCtx->JackLock);
+        return;
+    }
+
+    newJackState = inserted ? CSAUDIO_JACK_HEADPHONES_3POLE : CSAUDIO_JACK_UNPLUGGED;
+    DevCtx->MicPresent = FALSE;
+    DevCtx->CurrentJackState = newJackState;
+    DevCtx->JackChanges++;
+    WdfWaitLockRelease(DevCtx->JackLock);
+
+    NauLog(L"JackRaw", raw);
+    NauLog(L"JackInserted", inserted);
+    NauLog(L"JackChanges", DevCtx->JackChanges);
+    NauLog(L"JackActiveLow", DevCtx->JackActiveLow);
+
+    /* Complete all pending notification requests (CsAudioEndpointSwitcher) */
+    if (DevCtx->JackNotificationQueue) {
         WDFREQUEST notifyRequest;
         while (NT_SUCCESS(WdfIoQueueRetrieveNextRequest(DevCtx->JackNotificationQueue, &notifyRequest))) {
             PCSAUDIO_JACK_STATE pOutState;
-            status = WdfRequestRetrieveOutputBuffer(notifyRequest, sizeof(CSAUDIO_JACK_STATE), (PVOID*)&pOutState, NULL);
+            NTSTATUS status = WdfRequestRetrieveOutputBuffer(notifyRequest, sizeof(CSAUDIO_JACK_STATE), (PVOID*)&pOutState, NULL);
             if (NT_SUCCESS(status)) {
                 *pOutState = newJackState;
                 WdfRequestCompleteWithInformation(notifyRequest, STATUS_SUCCESS, sizeof(CSAUDIO_JACK_STATE));
@@ -791,6 +1011,23 @@ Nau8825_ProcessJackStateChange(
                 WdfRequestComplete(notifyRequest, status);
             }
         }
+    }
+}
+
+/* Periodic jack poll (passive level). */
+VOID
+Nau8825_EvtJackTimer(
+    _In_ WDFTIMER Timer
+    )
+{
+    WDFDEVICE device = (WDFDEVICE)WdfTimerGetParentObject(Timer);
+    PNAU8825_DEVICE_CONTEXT devCtx = GetNau8825Context(device);
+    if (devCtx->JackPollStop) return;
+    if (devCtx->PowerActive) {
+        Nau8825_ProcessJackStateChange(devCtx);
+    }
+    if (!devCtx->JackPollStop) {
+        WdfTimerStart(Timer, WDF_REL_TIMEOUT_IN_MS(NAU_JACK_POLL_MS));
     }
 }
 
@@ -830,6 +1067,9 @@ Nau8825_EvtInterruptWorkItem(
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
         "Nau8825Audio: EvtInterruptWorkItem triggered\n"));
 
+    if (devCtx->SpbTarget) {
+        I2cWriteRegister16(devCtx->SpbTarget, NAU8825_REG_INT_CLR_KEY_STATUS, 0xFFFF);
+    }
     Nau8825_ProcessJackStateChange(devCtx);
 }
 

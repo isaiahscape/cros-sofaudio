@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 
 set "ROOT_DIR=%~dp0"
-set "VERSION=v1.1.7"
+set "VERSION=v1.2"
 if not "%~1"=="" set "VERSION=%~1"
 
 set "DIST_DIR=%ROOT_DIR%dist\cros-sofaudio-%VERSION%"
@@ -28,28 +28,58 @@ if exist "%DIST_DIR%" (
 )
 mkdir "%DIST_DIR%"
 
-echo [INFO] Copying driver packages...
-mkdir "%DIST_DIR%\CsAudioIntcsof"
-xcopy /y /e "%ROOT_DIR%x64\Release\CsAudioIntcsof\*" "%DIST_DIR%\CsAudioIntcsof\" >nul
+echo [INFO] Copying driver packages to Drivers\...
+mkdir "%DIST_DIR%\Drivers\CsAudioIntcsof"
+xcopy /y /e "%ROOT_DIR%x64\Release\CsAudioIntcsof\*" "%DIST_DIR%\Drivers\CsAudioIntcsof\" >nul
+copy /y "%ROOT_DIR%CsAudioIntcsof\sof-*.ri" "%DIST_DIR%\Drivers\CsAudioIntcsof\" >nul
 
-mkdir "%DIST_DIR%\Max98373Audio"
-xcopy /y /e "%ROOT_DIR%x64\Release\Max98373Audio\*" "%DIST_DIR%\Max98373Audio\" >nul
+mkdir "%DIST_DIR%\Drivers\Max98373Audio"
+xcopy /y /e "%ROOT_DIR%x64\Release\Max98373Audio\*" "%DIST_DIR%\Drivers\Max98373Audio\" >nul
 
-mkdir "%DIST_DIR%\Nau8825Audio"
-xcopy /y /e "%ROOT_DIR%x64\Release\Nau8825Audio\*" "%DIST_DIR%\Nau8825Audio\" >nul
+mkdir "%DIST_DIR%\Drivers\Nau8825Audio"
+xcopy /y /e "%ROOT_DIR%x64\Release\Nau8825Audio\*" "%DIST_DIR%\Drivers\Nau8825Audio\" >nul
 
-mkdir "%DIST_DIR%\SklHdaudBus"
-xcopy /y /e "%ROOT_DIR%x64\Release\SklHdaudBus\*" "%DIST_DIR%\SklHdaudBus\" >nul
+mkdir "%DIST_DIR%\Drivers\SklHdaudBus"
+xcopy /y /e "%ROOT_DIR%x64\Release\SklHdaudBus\*" "%DIST_DIR%\Drivers\SklHdaudBus\" >nul
 
-echo [INFO] Copying utilities and documentation...
-copy /y "%ROOT_DIR%x64\Release\csaudioendpointswitcher.exe" "%DIST_DIR%\" >nul
-copy /y "%ROOT_DIR%x64\Release\CrosAudioTest.exe" "%DIST_DIR%\cros_audio_test.exe" >nul
-copy /y "%ROOT_DIR%install-drivers.cmd" "%DIST_DIR%\" >nul
-copy /y "%ROOT_DIR%uninstall-drivers.cmd" "%DIST_DIR%\" >nul
-copy /y "%ROOT_DIR%TheScapeNetwork.cer" "%DIST_DIR%\" >nul
-copy /y "%ROOT_DIR%INSTALL_GUIDE.md" "%DIST_DIR%\" >nul
-copy /y "%ROOT_DIR%LICENSE" "%DIST_DIR%\" >nul
-copy /y "%ROOT_DIR%README.md" "%DIST_DIR%\" >nul
+echo [INFO] Copying endpoint switcher service...
+mkdir "%DIST_DIR%\Switcher"
+copy /y "%ROOT_DIR%x64\Release\csaudioendpointswitcher.exe" "%DIST_DIR%\Switcher\" >nul
+
+echo [INFO] Copying installer scripts and documentation...
+copy /y "%ROOT_DIR%installer\Install.cmd" "%DIST_DIR%\" >nul
+copy /y "%ROOT_DIR%installer\install.ps1" "%DIST_DIR%\" >nul
+copy /y "%ROOT_DIR%installer\Uninstall.cmd" "%DIST_DIR%\" >nul
+copy /y "%ROOT_DIR%installer\uninstall.ps1" "%DIST_DIR%\" >nul
+copy /y "%ROOT_DIR%installer\Collect-Logs.cmd" "%DIST_DIR%\" >nul
+
+if exist "%ROOT_DIR%installer\ChromebookAudio.cer" (
+    copy /y "%ROOT_DIR%installer\ChromebookAudio.cer" "%DIST_DIR%\" >nul
+) else if exist "%ROOT_DIR%ChromebookAudio.cer" (
+    copy /y "%ROOT_DIR%ChromebookAudio.cer" "%DIST_DIR%\" >nul
+)
+
+if exist "%ROOT_DIR%installer\README.txt" (
+    copy /y "%ROOT_DIR%installer\README.txt" "%DIST_DIR%\" >nul
+) else if exist "%ROOT_DIR%README.txt" (
+    copy /y "%ROOT_DIR%README.txt" "%DIST_DIR%\" >nul
+)
+
+if exist "%ROOT_DIR%CsAudioIntcsof\LICENCE.sof-firmware" (
+    copy /y "%ROOT_DIR%CsAudioIntcsof\LICENCE.sof-firmware" "%DIST_DIR%\" >nul
+) else if exist "%ROOT_DIR%LICENCE.sof-firmware" (
+    copy /y "%ROOT_DIR%LICENCE.sof-firmware" "%DIST_DIR%\" >nul
+)
+
+if exist "%ROOT_DIR%LICENSE" (
+    copy /y "%ROOT_DIR%LICENSE" "%DIST_DIR%\" >nul
+)
+
+if exist "%ROOT_DIR%installer\VERSION.txt" (
+    copy /y "%ROOT_DIR%installer\VERSION.txt" "%DIST_DIR%\" >nul
+) else (
+    echo %VERSION%> "%DIST_DIR%\VERSION.txt"
+)
 
 if exist "%ZIP_FILE%" del /f /q "%ZIP_FILE%"
 

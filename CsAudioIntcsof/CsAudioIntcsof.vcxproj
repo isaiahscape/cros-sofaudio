@@ -96,6 +96,8 @@
     <ClCompile Include="NewDelete.cpp" />
     <ClCompile Include="speakertopo.cpp" />
     <ClCompile Include="micarraytopo.cpp" />
+    <ClCompile Include="sof_boot.cpp" />
+    <ClCompile Include="sof_ipc.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="micarraytopo.h" />
@@ -119,11 +121,16 @@
     <ClInclude Include="speakertopo.h" />
     <ClInclude Include="speakertoptable.h" />
     <ClInclude Include="speakerwavtable.h" />
+    <ClInclude Include="sof_regs.h" />
+    <ClInclude Include="sof_hp_pipeline.h" />
+    <ClInclude Include="sof_spk_pipeline.h" />
     <ClInclude Include="..\Common\csaudio_codec.h" />
     <ClInclude Include="..\SklHdaudBus\adsp.h" />
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="csaudiointcsof.inf" />
+    <Inf Include="csaudiointcsof.inf">
+      <TimeStamp>18.3.0.0</TimeStamp>
+    </Inf>
   </ItemGroup>
   <ItemGroup>
     <None Include="sof-apl.ri">
@@ -139,6 +146,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="sof-tgl.ri">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="sof-adl.ri">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

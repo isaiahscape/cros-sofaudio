@@ -107,7 +107,9 @@
     <ClInclude Include="trace.h" />
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="sklhdaudbus.inf" />
+    <Inf Include="sklhdaudbus.inf">
+      <TimeStamp>18.3.0.0</TimeStamp>
+    </Inf>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

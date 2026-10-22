@@ -92,7 +92,9 @@ KSJACK_DESCRIPTION HeadphoneJackDescBridge =
     eGeoLocRight,
     eGenLocPrimaryBox,
     ePortConnJack,
-    FALSE
+    TRUE        // Shown as always connected until jack detection is wired up
+                // (no presence-detect capability is reported, so Windows
+                // treats TRUE as "always available").
 };
 
 // Only return a KSJACK_DESCRIPTION for the physical bridge pin.

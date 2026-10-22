@@ -111,6 +111,7 @@ This project builds heavily upon and incorporates open-source source code and re
   * CoolStar's reverse-engineering of the Intel HD Audio / ADSP bus, ACPI NHLT parsing, and decoupled codec sidecar callback mechanism is the foundation for this driver suite. Full credit and gratitude go to CoolStar for making Windows on Chromebook audio possible!
   * See [CREDITS.md](CREDITS.md) for full details.
 
+* **[Kier](https://github.com/3kierz)** ([@3kierz](https://github.com/3kierz)) & **Claude** for diagnosing and fixing the sound output drivers.
 * **[MrChromebox](https://mrchromebox.tech)** for coreboot / UEFI firmware.
 * **The Sound Open Firmware (SOF) Project & Linux ALSA Team** for kernel hardware topologies and specs.
 
