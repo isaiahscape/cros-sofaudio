@@ -128,6 +128,8 @@ This project builds heavily upon and incorporates open-source source code and re
 
 ## License
 
-Licensed under the [MIT License](LICENSE).  
-Portions copyright (c) CoolStar.  
-Copyright (c) 2026 Leonardo (The Scape Network).
+This project is licensed under the [MIT License](LICENSE), with individual components retaining their respective upstream open-source licenses:
+* **Core Drivers, Switcher & Utilities:** [MIT License](LICENSE) &copy; 2026 Leonardo (The Scape Network).
+* **`SklHdaudBus`:** [BSD 3-Clause License](LICENSE) &copy; CoolStar.
+* **`CsAudioIntcsof` (PortCls / WaveRT base):** [MIT License](LICENSE) &copy; Microsoft Corporation.
+* **SOF DSP Firmware (`sof-*.ri`):** [SOF Firmware Release Licence](LICENCE.sof-firmware) (BSD-3-Clause + Patent Grant) &copy; Intel Corporation.
