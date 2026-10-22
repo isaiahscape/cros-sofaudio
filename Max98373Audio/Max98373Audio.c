@@ -47,15 +47,18 @@ struct max98373_initreg {
 };
 
 static const struct max98373_initreg c_Max98373_InitRegs[] = {
-    { MAX98373_R2024_PCM_DATA_FMT_CFG,      0x58 },
-    { MAX98373_R2026_PCM_CLOCK_RATIO,       0x06 },
-    { MAX98373_R202B_PCM_RX_EN,             0x01 },
-    { MAX98373_R202C_PCM_TX_EN,             0x01 },
-    { MAX98373_R203F_AMP_DSP_CFG,           0x03 },
-    { MAX98373_R2046_IV_SENSE_ADC_DSP_CFG,  0xF7 },
-    { MAX98373_R2047_IV_SENSE_ADC_EN,       0x03 },
-    { MAX98373_R20B1_BDE_L4_CFG_1,          0x06 },
-    { MAX98373_R20D4_DHT_EN,                0x01 }
+    { MAX98373_R20FE_DEVICE_AUTO_RESTART_CFG, 0x0F },
+    { MAX98373_R2027_PCM_SR_SETUP_1,          0x08 }, /* 48 kHz standard rate */
+    { MAX98373_R2028_PCM_SR_SETUP_2,          0x88 },
+    { MAX98373_R202B_PCM_RX_EN,               0x03 }, /* Enable BOTH Ch0 (Left) and Ch1 (Right) */
+    { MAX98373_R202C_PCM_TX_EN,               0x00 }, /* Disable feedback TX to avoid bus contention */
+    { MAX98373_R2020_PCM_TX_HIZ_EN_1,         0xFF }, /* Tri-state all TX slots (Hi-Z) */
+    { MAX98373_R2021_PCM_TX_HIZ_EN_2,         0xFF },
+    { MAX98373_R203F_AMP_DSP_CFG,             0x03 }, /* DC blocker + dither */
+    { MAX98373_R2046_IV_SENSE_ADC_DSP_CFG,    0xF7 },
+    { MAX98373_R2047_IV_SENSE_ADC_EN,         0x03 },
+    { MAX98373_R20B1_BDE_L4_CFG_1,            0x06 },
+    { MAX98373_R20D4_DHT_EN,                  0x01 }
 };
 
 /* =========================================================================
@@ -139,8 +142,8 @@ Max98373_EvtDeviceAdd(
     devCtx = GetMax98373Context(device);
     RtlZeroMemory(devCtx, sizeof(MAX98373_DEVICE_CONTEXT));
     devCtx->Device       = device;
-    devCtx->VolumeDb     = 12;                /* 12 = 0x0C (-6 dB unmuted) */
-    devCtx->HardwareGain = 0;                 /* 0 dB analog gain */
+    devCtx->VolumeDb     = 0;                 /* 0 dB unattenuated */
+    devCtx->HardwareGain = 0x0A;              /* +18 dB full-scale analog gain */
     devCtx->SampleRate   = 48000;             /* Standard 48 kHz */
     devCtx->SpeakerRole  = SPEAKER_ROLE_STEREO;
 
@@ -667,6 +670,7 @@ Max98373_EvtD0Entry(
 {
     PMAX98373_DEVICE_CONTEXT devCtx;
     NTSTATUS status;
+    UINT8 revId = 0;
 
     UNREFERENCED_PARAMETER(PreviousState);
     PAGED_CODE();
@@ -677,14 +681,24 @@ Max98373_EvtD0Entry(
         "Max98373Audio: EvtD0Entry (powering up)\n"));
 
     devCtx->PowerActive = TRUE;
+    devCtx->Streaming = FALSE;
 
-    status = Max98373_InitializeHardware(devCtx);
+    /* Verify device presence by reading RevID */
+    status = I2cReadRegister8(devCtx->SpbTarget, MAX98373_REVID_REG, &revId);
     if (!NT_SUCCESS(status)) {
         KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-            "Max98373Audio: Max98373_InitializeHardware failed 0x%08X\n", status));
+            "Max98373Audio: Failed to read revision ID 0x%08X\n", status));
         devCtx->PowerActive = FALSE;
         return status;
     }
+    devCtx->RevisionId = revId;
+    KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
+        "Max98373Audio: Detected MAX98373 silicon revision 0x%02X (UID=%d, Role=%d)\n",
+        revId, devCtx->UID, devCtx->SpeakerRole));
+
+    /* Keep amplifier in standby until audio stream actually starts (when DSP clocks are active) */
+    I2cWriteRegister8(devCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x00);
+    I2cWriteRegister8(devCtx->SpbTarget, MAX98373_R20FF_GLOBAL_SHDN, 0x00);
 
     return STATUS_SUCCESS;
 }
@@ -728,25 +742,28 @@ Max98373_InitializeHardware(
 {
     NTSTATUS status;
     LARGE_INTEGER delay;
-    UINT8 revId = 0;
+    UINT8 intRaw1 = 0, intState1 = 0;
+    BOOLEAN locked = FALSE;
 
     PAGED_CODE();
 
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
-    /* Verify device presence by reading RevID */
-    status = I2cReadRegister8(DevCtx->SpbTarget, MAX98373_REVID_REG, &revId);
+    KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
+        "Max98373Audio: Initializing hardware for stream (UID=%d, Role=%d)\n",
+        DevCtx->UID, DevCtx->SpeakerRole));
+
+    /* Step 1: Soft reset to clear any latched clock errors from prior idle state */
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2000_SW_RESET, 0x01);
     if (!NT_SUCCESS(status)) {
         KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-            "Max98373Audio: Failed to read revision ID 0x%08X\n", status));
+            "Max98373Audio: Soft reset failed 0x%08X\n", status));
         return status;
     }
-    DevCtx->RevisionId = revId;
-    KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-        "Max98373Audio: Detected MAX98373 silicon revision 0x%02X (UID=%d, Role=%d)\n",
-        revId, DevCtx->UID, DevCtx->SpeakerRole));
+    delay.QuadPart = -100000LL; /* 10ms for reset completion */
+    KeDelayExecutionThread(KernelMode, FALSE, &delay);
 
-    /* Step 1: Base init registers from CoolStar opengmaxcodec */
+    /* Step 2: Write base init registers (enables auto-restart, DC blocker, DHT, BDE) */
     for (ULONG i = 0; i < ARRAYSIZE(c_Max98373_InitRegs); i++) {
         status = I2cWriteRegister8(DevCtx->SpbTarget, c_Max98373_InitRegs[i].reg, c_Max98373_InitRegs[i].val);
         if (!NT_SUCCESS(status)) {
@@ -757,108 +774,20 @@ Max98373_InitializeHardware(
         }
     }
 
-    /* Step 2: Digital volume (0x0C = 12, proven safe & unmuted) and analog path gain */
-    UINT16 digitalVolume = 12;
-    UINT16 digitalGain = 0;
-    UINT16 digitalMaxGain = 0;
-
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203D_AMP_DIG_VOL_CTRL, (UINT8)(digitalVolume & 0x7F));
+    /* Step 3: Digital volume (unattenuated) and full-scale analog gain (+18 dB) */
+    UINT8 volReg = (UINT8)(DevCtx->VolumeDb & 0x7F);
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203D_AMP_DIG_VOL_CTRL, volReg);
     if (!NT_SUCCESS(status)) return status;
 
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203E_AMP_PATH_GAIN, (UINT8)(((digitalGain & 0xF) << 4) | (digitalMaxGain & 0xF)));
+    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203E_AMP_PATH_GAIN, 0x0A);
     if (!NT_SUCCESS(status)) return status;
 
-    /* Step 3: Query ACPI _DSD properties (maxim,spkfb-slot-no, maxim,vmon-slot-no, etc.) */
-    UINT16 spkfb_slot_no = 0;
-    if (!NT_SUCCESS(Max98373_GetIntegerProperty(DevCtx->Device, "maxim,spkfb-slot-no", &spkfb_slot_no))) {
-        spkfb_slot_no = 2;
-    }
-
-    UINT16 vmon_slot_no = 0;
-    UINT16 imon_slot_no = 0;
-    BOOLEAN useDefaults = FALSE;
-
-    if (!NT_SUCCESS(Max98373_GetIntegerProperty(DevCtx->Device, "maxim,vmon-slot-no", &vmon_slot_no))) {
-        useDefaults = TRUE;
-    }
-    if (!NT_SUCCESS(Max98373_GetIntegerProperty(DevCtx->Device, "maxim,imon-slot-no", &imon_slot_no))) {
-        useDefaults = TRUE;
-    }
-
-    UINT16 interleave_mode = 0;
-    if (useDefaults) {
-        if (DevCtx->UID == 0) {
-            vmon_slot_no = 4;
-            imon_slot_no = 5;
-        } else {
-            vmon_slot_no = 6;
-            imon_slot_no = 7;
-        }
-        interleave_mode = 0;
-    } else {
-        if (NT_SUCCESS(Max98373_GetIntegerProperty(DevCtx->Device, "maxim,interleave_mode", &interleave_mode))) {
-            interleave_mode = 1;
-        } else {
-            interleave_mode = 0;
-        }
-    }
-
-    DevCtx->VmonSlot = (UINT8)vmon_slot_no;
-    DevCtx->ImonSlot = (UINT8)imon_slot_no;
-
-    /* Step 4: Clock ratio & channel size */
-    UINT16 fmt = MAX98373_PCM_MODE_CFG_CHANSZ_16;
-    UINT16 clkRatio = 0x06;
-
-    if (vmon_slot_no < 4) {
-        if ((vmon_slot_no % 2) == 0) {
-            fmt = MAX98373_PCM_MODE_CFG_CHANSZ_32;
-            clkRatio = 0x08;
-        } else {
-            fmt = MAX98373_PCM_MODE_CFG_CHANSZ_24;
-            clkRatio = 0x07;
-        }
-    }
-
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, (UINT8)clkRatio);
-    if (!NT_SUCCESS(status)) return status;
-
-    /* Step 5: PCM TX Hi-Z masking (keep slots 0-3 Hi-Z so audio playback slots are unobstructed) */
-    UINT16 temp = (UINT16)~((1 << vmon_slot_no) | (1 << imon_slot_no));
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2020_PCM_TX_HIZ_EN_1, (UINT8)(temp & 0xFF));
-    if (!NT_SUCCESS(status)) return status;
-
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2021_PCM_TX_HIZ_EN_2, (UINT8)((temp >> 8) | 0xFF00));
-    if (!NT_SUCCESS(status)) return status;
-
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2022_PCM_TX_SRC_1, (UINT8)(((imon_slot_no & 0xF) << 4) | (vmon_slot_no & 0xF)));
-    if (!NT_SUCCESS(status)) return status;
-
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2023_PCM_TX_SRC_2, (UINT8)spkfb_slot_no);
-    if (!NT_SUCCESS(status)) return status;
-
-    /* Step 6: TDM Mode 0 PCM format & sample rate */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG, (UINT8)(MAX98373_PCM_FORMAT_TDM_MODE0 << MAX98373_PCM_MODE_CFG_FORMAT_SHIFT));
-    if (!NT_SUCCESS(status)) return status;
-
-    status = I2cUpdateRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG, (UINT8)MAX98373_PCM_MODE_CFG_CHANSZ_MASK, (UINT8)fmt);
-    if (!NT_SUCCESS(status)) return status;
-
-    status = I2cUpdateRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG, (UINT8)MAX98373_PCM_TX_CH_INTERLEAVE_MASK, (UINT8)(interleave_mode ? MAX98373_PCM_TX_CH_INTERLEAVE_MASK : 0));
-    if (!NT_SUCCESS(status)) return status;
-
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2028_PCM_SR_SETUP_2, (UINT8)(interleave_mode != 0 ? 0x85 : 0x88));
-    if (!NT_SUCCESS(status)) return status;
-
-    /* Step 7: PCM to Speaker Mono Mix Channel Routing */
-    BOOLEAN isRight = FALSE;
-    if (DevCtx->SpeakerRole == SPEAKER_ROLE_RIGHT) {
-        isRight = TRUE;
-    } else if (DevCtx->SpeakerRole == SPEAKER_ROLE_LEFT) {
-        isRight = FALSE;
-    } else {
-        isRight = (DevCtx->UID == 1);
-    }
+    /* Step 4: Speaker Channel Mono Mix Routing:
+     * - Right Speaker (UID=0 or Role=SPEAKER_ROLE_RIGHT): Channel 1 (0x40)
+     * - Left Speaker (UID=1 or Role=SPEAKER_ROLE_LEFT): Channel 0 (0x00)
+     */
+    BOOLEAN isRight = (DevCtx->SpeakerRole == SPEAKER_ROLE_RIGHT ||
+                      (DevCtx->SpeakerRole == SPEAKER_ROLE_STEREO && DevCtx->UID == 0));
 
     status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2029_PCM_TO_SPK_MONO_MIX_1, (UINT8)(isRight ? 0x40 : 0x00));
     if (!NT_SUCCESS(status)) return status;
@@ -866,22 +795,87 @@ Max98373_InitializeHardware(
     status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R202A_PCM_TO_SPK_MONO_MIX_2, 0x01);
     if (!NT_SUCCESS(status)) return status;
 
-    /* Step 8: Power up output stage (GLOBAL_SHDN = 1 -> delay 2ms -> AMP_EN = 1) */
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FF_GLOBAL_SHDN, 0x01);
-    if (!NT_SUCCESS(status)) return status;
+    /* Step 5: Clock & Format Auto-Lock:
+     * Try candidate DAI configurations matching Alder Lake Intel SSP output:
+     * 1. 0xC0 / 0x04: I2S 32-bit slot, 64x fs (3.072 MHz) [Standard Brya Alder Lake I2S]
+     * 2. 0xC0 / 0x06: I2S 32-bit slot, 128x fs (6.144 MHz)
+     * 3. 0x40 / 0x02: I2S 16-bit slot, 32x fs (1.536 MHz)
+     * 4. 0x58 / 0x06: TDM0 16-bit slot, 128x fs (6.144 MHz)
+     * 5. 0xD8 / 0x08: TDM0 32-bit slot, 256x fs (12.288 MHz)
+     */
+    static const struct {
+        UINT8 fmt;
+        UINT8 clkRatio;
+        PCSTR name;
+    } candidates[] = {
+        { 0xC0, 0x04, "I2S 32-bit slot, 64x fs (3.072 MHz)" },
+        { 0xC0, 0x06, "I2S 32-bit slot, 128x fs (6.144 MHz)" },
+        { 0x40, 0x02, "I2S 16-bit slot, 32x fs (1.536 MHz)" },
+        { 0x58, 0x06, "TDM0 16-bit slot, 128x fs (6.144 MHz)" },
+        { 0xD8, 0x08, "TDM0 32-bit slot, 256x fs (12.288 MHz)" }
+    };
 
-    delay.QuadPart = -20000LL; /* 2ms */
-    KeDelayExecutionThread(KernelMode, FALSE, &delay);
+    UINT8 chosenFmt = candidates[0].fmt;
+    UINT8 chosenClk = candidates[0].clkRatio;
 
-    status = I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x01);
-    if (!NT_SUCCESS(status)) return status;
+    for (ULONG i = 0; i < ARRAYSIZE(candidates); i++) {
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG, candidates[i].fmt);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, candidates[i].clkRatio);
+
+        /* Power cycle output stage */
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FF_GLOBAL_SHDN, 0x01);
+        delay.QuadPart = -20000LL; /* 2ms */
+        KeDelayExecutionThread(KernelMode, FALSE, &delay);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x01);
+
+        /* Delay 5ms for clock monitor evaluation */
+        delay.QuadPart = -50000LL; /* 5ms */
+        KeDelayExecutionThread(KernelMode, FALSE, &delay);
+
+        intRaw1 = 0;
+        intState1 = 0;
+        I2cReadRegister8(DevCtx->SpbTarget, MAX98373_R2001_INT_RAW1, &intRaw1);
+        I2cReadRegister8(DevCtx->SpbTarget, MAX98373_R2004_INT_STATE1, &intState1);
+
+        /* Bit 1 = Clock Error */
+        if ((intState1 & 0x02) == 0) {
+            KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
+                "Max98373Audio: [CLOCK LOCKED] Candidate %lu (%s) - RAW1=0x%02X, STATE1=0x%02X\n",
+                i, candidates[i].name, intRaw1, intState1));
+            chosenFmt = candidates[i].fmt;
+            chosenClk = candidates[i].clkRatio;
+            locked = TRUE;
+            break;
+        } else {
+            KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
+                "Max98373Audio: Candidate %lu (%s) clk error - RAW1=0x%02X, STATE1=0x%02X, trying next...\n",
+                i, candidates[i].name, intRaw1, intState1));
+            /* Disable amp before trying next candidate */
+            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x00);
+            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FF_GLOBAL_SHDN, 0x00);
+            delay.QuadPart = -10000LL; /* 1ms */
+            KeDelayExecutionThread(KernelMode, FALSE, &delay);
+        }
+    }
+
+    /* If none locked cleanly without error flag, fallback to Candidate 0 (64x fs I2S standard) and power up */
+    if (!locked) {
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
+            "Max98373Audio: No candidate locked without error, falling back to standard I2S 64x fs\n"));
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2024_PCM_DATA_FMT_CFG, candidates[0].fmt);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2026_PCM_CLOCK_RATIO, candidates[0].clkRatio);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FF_GLOBAL_SHDN, 0x01);
+        delay.QuadPart = -20000LL; /* 2ms */
+        KeDelayExecutionThread(KernelMode, FALSE, &delay);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x01);
+    }
 
     DevCtx->PowerActive = TRUE;
     DevCtx->Streaming = TRUE;
 
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-        "Max98373Audio: Hardware initialization complete (UID=%d, isRight=%d, vmon=%d, imon=%d, fmt=0x%02X, clkRatio=0x%02X)\n",
-        DevCtx->UID, isRight, vmon_slot_no, imon_slot_no, fmt, clkRatio));
+        "Max98373Audio: Hardware stream started (UID=%d, isRight=%d, fmt=0x%02X, clk=0x%02X, locked=%d)\n",
+        DevCtx->UID, isRight, chosenFmt, chosenClk, locked));
 
     return STATUS_SUCCESS;
 }
@@ -925,29 +919,25 @@ Max98373_SetStreamState(
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
     if (Start) {
-        if (DevCtx->Streaming) {
-            /* Ensure amp stage is powered on and unmuted */
-            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FF_GLOBAL_SHDN, 0x01);
-            delay.QuadPart = -20000LL; /* 2ms */
-            KeDelayExecutionThread(KernelMode, FALSE, &delay);
-            I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x01);
-            return STATUS_SUCCESS;
-        }
-
         status = Max98373_InitializeHardware(DevCtx);
     } else {
         if (!DevCtx->Streaming) {
             return STATUS_SUCCESS;
         }
 
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
+            "Max98373Audio: Stopping stream (UID=%d)\n", DevCtx->UID));
+
         /* Disable amp stage */
         I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x00);
-
         delay.QuadPart = -20000LL; /* 2ms */
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
 
-        /* Soft reset */
+        /* Soft reset to clear internal state */
         I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2000_SW_RESET, 0x01);
+
+        /* Power down global shutdown */
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R20FF_GLOBAL_SHDN, 0x00);
 
         DevCtx->Streaming = FALSE;
     }
@@ -979,7 +969,7 @@ Max98373_SetVolume(
         I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x00);
         return I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203D_AMP_DIG_VOL_CTRL, 0x7F);
     } else {
-        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203D_AMP_DIG_VOL_CTRL, 12);
+        I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R203D_AMP_DIG_VOL_CTRL, (UINT8)(DevCtx->VolumeDb & 0x7F));
         return I2cWriteRegister8(DevCtx->SpbTarget, MAX98373_R2043_AMP_EN, 0x01);
     }
 }
@@ -1041,6 +1031,17 @@ Max98373_EvtIoDeviceControl(
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(CSAUDIO_VOLUME_PARAMS), (PVOID*)&volParams, NULL);
         if (NT_SUCCESS(status)) {
             status = Max98373_SetVolume(devCtx, volParams->VolumeDbLevel, volParams->Muted);
+        }
+        break;
+    }
+
+    case IOCTL_CSAUDIO_SET_MUTE: {
+        PCSAUDIO_VOLUME_PARAMS volParams;
+        status = WdfRequestRetrieveInputBuffer(Request, sizeof(CSAUDIO_VOLUME_PARAMS), (PVOID*)&volParams, NULL);
+        if (NT_SUCCESS(status)) {
+            status = Max98373_SetVolume(devCtx, volParams->VolumeDbLevel, TRUE);
+        } else {
+            status = Max98373_SetVolume(devCtx, devCtx->VolumeDb, TRUE);
         }
         break;
     }
