@@ -8,6 +8,11 @@
 * **Maxim Integrated MAX98373** Class-D Smart Power Amplifiers (internal stereo speakers)
 * **Nuvoton NAU88L25** High-Performance Audio Codec (3.5mm headphone jack, TRRS headset microphone, and hardware jack detection)
 
+> [!IMPORTANT]
+> **Mandatory Requirements:**
+> * **Disable Secure Boot:** Secure Boot **must be disabled** in the UEFI firmware settings (e.g. MrChromebox UEFI setup).
+> * **Enable Test Signing:** Windows **must run in Test Mode** (`bcdedit /set testsigning on`) because these custom kernel-mode drivers are test-signed. The installer checks this and can turn it on automatically (a reboot is required).
+
 ---
 
 ## Architecture Overview
@@ -67,12 +72,12 @@ On modern Chromebooks running coreboot / UEFI firmware (such as MrChromebox UEFI
 
 ## Quick Installation
 
-1. Download the latest `cros-sofaudio-v1.1.1.zip` from the [Releases](https://github.com/isaiahscape/cros-sofaudio/releases) page.
+1. Download the latest `cros-sofaudio-v1.2.zip` from the [Releases](https://github.com/isaiahscape/cros-sofaudio/releases) page.
 2. Extract the ZIP archive on your Chromebook.
-3. Right-click **`install-drivers.cmd`** and select **Run as administrator**.
-   * It will self-elevate, install the security certificate to the Windows Trusted Certificate store, and install the complete driver stack (`SklHdaudBus`, `CsAudioIntcsof`, `Max98373Audio`, `Nau8825Audio`) via `pnputil`.
-4. (Optional) Run `cros_audio_test.exe` to inspect live hardware registers and monitor jack plug/unplug events.
-5. **To uninstall:** Right-click **`uninstall-drivers.cmd`** and select **Run as administrator** to remove all drivers, the switcher service, and DSP firmware.
+3. Double-click **`Install.cmd`** (it requests administrator rights automatically).
+   * It validates hardware compatibility, trusts the security certificate, pre-configures registry settings, installs all drivers via `pnputil`, and registers the auto-switcher service.
+4. **Reboot** your laptop to start the newly installed drivers.
+5. **To uninstall:** Double-click **`Uninstall.cmd`** (as administrator) to remove all drivers and the switcher service.
 
 ---
 
