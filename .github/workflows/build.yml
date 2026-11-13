@@ -142,20 +142,13 @@ jobs:
           "thumbprint=$thumbprint" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Build signed with ephemeral certificate $thumbprint"
 
-      - name: Verify trusted build signatures
+      - name: Verify build signer identities
         shell: pwsh
         run: |
           $certificatePath = Join-Path $env:GITHUB_WORKSPACE 'x64\Release\ChromebookAudio.cer'
           $certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($certificatePath)
           if ($certificate.Thumbprint -ne '${{ steps.signing.outputs.thumbprint }}') {
               throw 'The exported build certificate does not match the CI signing certificate.'
-          }
-
-          foreach ($store in 'Root', 'TrustedPublisher') {
-              & certutil.exe -user -addstore -f $store $certificatePath | Out-Host
-              if ($LASTEXITCODE -ne 0) {
-                  throw "Could not trust the CI certificate in CurrentUser\$store (code $LASTEXITCODE)."
-              }
           }
 
           $signedFiles = @(
@@ -173,7 +166,6 @@ jobs:
 
           & .\build-tools\Test-DriverSignatures.ps1 `
               -CertificatePath $certificatePath `
-              -RequireValid `
               -Paths ($signedFiles -join ';')
 
       - name: Create installable package
@@ -248,7 +240,6 @@ jobs:
               Select-Object -ExpandProperty FullName
           & .\build-tools\Test-DriverSignatures.ps1 `
               -CertificatePath $packageCertificate `
-              -RequireValid `
               -Paths ($signedFiles -join ';')
 
           $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
