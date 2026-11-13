@@ -30,15 +30,21 @@ What it contains
   Tools\cros_audio_test.exe  signed codec and jack diagnostic utility
 
 Volume tuning (registry, HKLM\SOFTWARE\CrosSofAudio, DWORD; reboot after)
-  SpeakerDspAttenDb       speaker attenuation in dB, default 0 (loudest)
+  SpeakerDspAttenDb       speaker attenuation in dB, default 2 (~79% amplitude)
   SpeakerAmpAttenHalfDb   extra amp attenuation in 0.5 dB steps, default 0
+  SpeakerLimiterThresholdDb  peak limiter headroom in dBFS, default 2
+                             (valid 0-15; larger is more protective)
   HeadphoneDspAttenDb     headphone attenuation in dB, default 20
   Example (6 dB quieter speakers):
     reg add HKLM\SOFTWARE\CrosSofAudio /v SpeakerDspAttenDb /t REG_DWORD /d 6 /f
-  If the speakers distort at full Windows volume, add 3-6 dB here.
+  The MAX98373 limiter uses a fast attack and smooth release to reduce peak
+  clipping. If the speakers still distort at full Windows volume, use 3-6 dB
+  of SpeakerDspAttenDb. The current SOF speaker pipeline has no tonal EQ block,
+  so this release does not apply unverified speaker-specific EQ coefficients.
 
 Jack detection
-  If plugging in switches to Speakers instead of Headphones (inverted), set
+  Default JackActiveLow is 0. If a different board reports the opposite GPIO
+  polarity (plugging in switches to Speakers instead of Headphones), set:
     reg add HKLM\SOFTWARE\CrosSofAudio /v JackActiveLow /t REG_DWORD /d 1 /f
   and reboot.
 

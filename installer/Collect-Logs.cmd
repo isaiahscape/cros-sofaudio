@@ -23,6 +23,7 @@ set "LOG=%~dp0audio-log.txt"
   echo.
   echo == Settings ==
   reg query HKLM\SOFTWARE\CrosSofAudio /v *Atten*
+  reg query HKLM\SOFTWARE\CrosSofAudio /v SpeakerLimiterThresholdDb
   reg query HKLM\SOFTWARE\CrosSofAudio /v JackActiveLow
   reg query HKLM\SYSTEM\CurrentControlSet\Control\CI\Config /v VulnerableDriverBlocklistEnable
   echo.

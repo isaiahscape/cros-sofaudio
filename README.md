@@ -62,7 +62,7 @@ On modern Chromebooks running coreboot / UEFI firmware (such as MrChromebox UEFI
   * ACPI Hardware IDs: `ACPI\MX98373`, `ACPI\MAX98373`
   * Full 16-bit register address, 8-bit data I2C transaction engine over Windows SPB.
   * Channel role routing (Left, Right, Mono Mix) based on ACPI `_UID` or slot properties.
-  * Pop-free soft-mute and dynamic headroom limiter protection.
+  * Pop-free soft-mute and a fast hardware peak limiter for clipping protection.
   * Power management (`D0Entry` / `D0Exit`) with low-power global shutdown standby.
 * **Nau8825Audio.sys**:
   * ACPI Hardware IDs: `ACPI\10508825`, `ACPI\NVTN2000`, `ACPI\NAU8825`
@@ -106,6 +106,8 @@ The script builds all driver projects in `Release|x64`, signs them, exports the 
 
 Trusted CI builds read the private PFX from the encrypted repository secrets `DRIVER_SIGNING_PFX_BASE64` and `DRIVER_SIGNING_PFX_PASSWORD`, verify that it matches the public `ChromebookAudio.cer`, sign every driver/catalog/tool, delete the temporary PFX, verify the extracted ZIP, and upload `cros-sofaudio-<version>.zip` as a workflow artifact. The private key is never committed or packaged. CI artifacts are test-signed and still require Windows Test Mode, just like local development builds.
 
+Pushing a semantic version tag such as `v1.2.1` publishes that verified ZIP and `SHA256SUMS.txt` as a GitHub Release. A maintainer can instead run the workflow manually, enter a `v*` package version, and enable **Publish release**. Ordinary `main` builds remain Actions artifacts only.
+
 Configure the signing secrets under **Repository Settings → Secrets and variables → Actions**:
 
 ```powershell
@@ -114,6 +116,12 @@ Configure the signing secrets under **Repository Settings → Secrets and variab
 ```
 
 Create `DRIVER_SIGNING_PFX_PASSWORD` with the PFX export password. The PFX must contain the private key matching the committed `ChromebookAudio.cer`; the workflow fails before signing if the thumbprints differ.
+
+### Speaker output tuning
+
+The speaker path defaults to `-2 dB`, approximately 79.4% linear amplitude, and the MAX98373 hardware limiter catches peaks at `-2 dBFS` with a fast attack and smooth release. These settings reduce clipping without changing the validated amplifier path gain. They can be tuned under `HKLM\SOFTWARE\CrosSofAudio` with `SpeakerDspAttenDb` and `SpeakerLimiterThresholdDb` (DWORDs; reboot after changing).
+
+The current SOF speaker pipeline is `PCM -> volume -> SSP1`; it does not contain a FIR/IIR equalizer. No arbitrary tonal EQ was added without measured, device-specific coefficients.
 
 ---
 

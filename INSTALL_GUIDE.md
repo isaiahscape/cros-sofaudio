@@ -30,7 +30,7 @@ The script will locate your Visual Studio 2022 / WDK installation and build the 
 3. Build the Solution (`Ctrl + Shift + B`).
 
 #### Option C: GitHub Actions
-Run **Build Windows driver package** from the repository's Actions tab, or push to `main`/a `v*` tag. The workflow uses VS 2022, SDK/WDK 10.0.26100, KMDF 1.33, and the encrypted PFX configured in the repository Actions secrets. Download the `cros-sofaudio-*-windows-x64-attempt-*` artifact when the run completes.
+Run **Build Windows driver package** from the repository's Actions tab, or push to `main`/a `v*` tag. The workflow uses VS 2022, SDK/WDK 10.0.26100, KMDF 1.33, and the encrypted PFX configured in the repository Actions secrets. Download the `cros-sofaudio-*-windows-x64-attempt-*` artifact when the run completes. A `v*` semantic-version tag automatically creates a GitHub Release after the signed package passes validation; manual runs can do the same by supplying the version and enabling **Publish release**.
 
 ---
 

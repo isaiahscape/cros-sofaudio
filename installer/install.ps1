@@ -219,7 +219,11 @@ foreach ($k in 'DspBoot', 'DspIpc', 'DspDiag', 'Codec', 'AmpLeft', 'AmpRight', '
     if (Test-Path "$regRoot\$k") { Remove-Item "$regRoot\$k" -Recurse -Force }
 }
 reg add HKLM\SOFTWARE\CrosSofAudio\DspBoot /f | Out-Null
-reg add HKLM\SOFTWARE\CrosSofAudio /v JackActiveLow /t REG_DWORD /d 1 /f | Out-Null
+# Volmar reports an inserted jack as GPIO high. Keep approximately 80% speaker
+# amplitude (-2 dB) and match the hardware limiter to that headroom.
+Set-ItemProperty -Path $regRoot -Name 'JackActiveLow' -Value 0 -Type DWord
+Set-ItemProperty -Path $regRoot -Name 'SpeakerDspAttenDb' -Value 2 -Type DWord
+Set-ItemProperty -Path $regRoot -Name 'SpeakerLimiterThresholdDb' -Value 2 -Type DWord
 Install-Inf 'Drivers\CsAudioIntcsof\csaudiointcsof.inf'
 Install-Inf 'Drivers\Nau8825Audio\Nau8825Audio.inf'
 Install-Inf 'Drivers\Max98373Audio\Max98373Audio.inf'

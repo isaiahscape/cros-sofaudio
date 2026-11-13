@@ -224,7 +224,7 @@ typedef struct _SOF_PATH_DESC {
 
 static const SOF_PATH_DESC c_PathDesc[SOF_PATH_COUNT] = {
     /* SOF_PATH_SPK */
-    { L"Spk", L"SpeakerDspAttenDb", 0, SOF_SPK_VOL_MSG_INDEX, "SSP1", 1, L"SUCCESS: speaker pipeline 1 (PCM0P -> volume -> SSP1) created",
+    { L"Spk", L"SpeakerDspAttenDb", 2, SOF_SPK_VOL_MSG_INDEX, "SSP1", 1, L"SUCCESS: speaker pipeline 1 (PCM0P -> volume -> SSP1) created",
       c_SofSpkSetup, ARRAYSIZE(c_SofSpkSetup),
       BLOB(c_SofSpkDaiHwParams), BLOB(c_SofSpkDaiHwFree), BLOB(c_SofSpkPcmParams),
       BLOB(c_SofSpkTrigStart), BLOB(c_SofSpkTrigStop), BLOB(c_SofSpkPcmFree) },

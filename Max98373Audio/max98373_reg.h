@@ -178,3 +178,20 @@
 /* AMP_DIG_VOL_CTRL (0x203D) */
 #define MAX98373_AMP_VOL_0DB                0x00  /* 0 dB */
 #define MAX98373_AMP_VOL_MUTE               0x7F  /* Mute / -63.5 dB */
+
+/* LIMITER_THRESH_CFG (0x20E0)
+ * Raw threshold 0..15 maps to -15..0 dBFS in 1 dB steps. */
+#define MAX98373_LIMITER_THRESH_MASK         (0x0F << 2)
+#define MAX98373_LIMITER_THRESH_SHIFT        2
+#define MAX98373_LIMITER_THRESH_SRC_MASK     (0x01 << 0)
+#define MAX98373_LIMITER_THRESH_SRC_MANUAL   (0x00 << 0)
+
+/* LIMITER_ATK_REL_RATES (0x20E1) */
+#define MAX98373_LIMITER_ATTACK_MASK         (0x0F << 4)
+#define MAX98373_LIMITER_ATTACK_40US         (0x02 << 4)
+#define MAX98373_LIMITER_RELEASE_MASK        (0x0F << 0)
+#define MAX98373_LIMITER_RELEASE_163MS       (0x0C << 0)
+
+/* LIMITER_EN (0x20E2) */
+#define MAX98373_LIMITER_EN_MASK             (0x01 << 0)
+#define MAX98373_LIMITER_ENABLE              (0x01 << 0)

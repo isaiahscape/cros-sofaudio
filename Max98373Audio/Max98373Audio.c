@@ -761,6 +761,9 @@ static VOID AmpSnapshot(_In_ PMAX98373_DEVICE_CONTEXT DevCtx, _In_ BOOLEAN AtSto
         AmpLogReg(DevCtx, L"R202B_RX_EN",      MAX98373_R202B_PCM_RX_EN);
         AmpLogReg(DevCtx, L"R203D_DIG_VOL",    MAX98373_R203D_AMP_DIG_VOL_CTRL);
         AmpLogReg(DevCtx, L"R203E_PATH_GAIN",  MAX98373_R203E_AMP_PATH_GAIN);
+        AmpLogReg(DevCtx, L"R20E0_LIM_THRESH", MAX98373_R20E0_LIMITER_THRESH_CFG);
+        AmpLogReg(DevCtx, L"R20E1_LIM_RATES",  MAX98373_R20E1_LIMITER_ATK_REL_RATES);
+        AmpLogReg(DevCtx, L"R20E2_LIM_ENABLE", MAX98373_R20E2_LIMITER_EN);
         AmpLogReg(DevCtx, L"R2043_AMP_EN",     MAX98373_R2043_AMP_EN);
         AmpLogReg(DevCtx, L"R20FF_GLOBAL",     MAX98373_R20FF_GLOBAL_SHDN);
         AmpLogReg(DevCtx, L"Start_INT_RAW1",   MAX98373_R2001_INT_RAW1);
@@ -810,8 +813,10 @@ static VOID AmpSleepMs(ULONG ms)
  *     loaded), so every TX slot stays Hi-Z and the I/V ADC stays off.
  *   - Amp digital volume: 0 dB (Linux default) unless
  *     HKLM\SOFTWARE\CrosSofAudio\SpeakerAmpAttenHalfDb (0.5 dB steps) says
- *     otherwise; the speaker path gain keeps its reset default. Windows' own
- *     volume slider scales the audio before it reaches the DSP.
+ *     otherwise; the speaker path gain keeps its reset default. The SOF path
+ *     supplies the normal -2 dB output headroom. A hardware peak limiter adds
+ *     fast clipping protection without changing the speaker's tonal response.
+ *     Windows' own volume slider scales the audio before it reaches the DSP.
  * ========================================================================= */
 
 static ULONG AmpReadConfigDword(_In_ PCWSTR Name, _In_ ULONG Default)
@@ -846,6 +851,7 @@ Max98373_InitializeHardware(
     NTSTATUS status;
     UINT8 rev = 0;
     UINT8 daiSel;
+    ULONG limiterThresholdDb;
 
     PAGED_CODE();
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
@@ -866,6 +872,21 @@ Max98373_InitializeHardware(
     AMP_WR(MAX98373_R203F_AMP_DSP_CFG, 0x03);                 /* DC blocker + dither */
     AMP_WR(MAX98373_R2046_IV_SENSE_ADC_DSP_CFG, 0x07);
     AMP_WR(MAX98373_R20FE_DEVICE_AUTO_RESTART_CFG, 0x0F);     /* OVC/THERM/CMON auto restart, clock monitor */
+
+    /* Manual peak limiter: default -2 dBFS, 40 us attack, 163.84 ms release.
+     * Linux exposes the threshold as raw 0..15 == -15..0 dBFS, hence
+     * (15 - attenuation) in bits [5:2]. Preserve this as a positive registry
+     * attenuation so larger values provide more headroom. */
+    limiterThresholdDb = AmpReadConfigDword(L"SpeakerLimiterThresholdDb", 2);
+    if (limiterThresholdDb > 15) limiterThresholdDb = 15;
+    AmpLog(DevCtx, L"LimiterThresholdDb", limiterThresholdDb);
+    AMP_WR(MAX98373_R20E0_LIMITER_THRESH_CFG,
+           (UINT8)(((15 - limiterThresholdDb) << MAX98373_LIMITER_THRESH_SHIFT) |
+                   MAX98373_LIMITER_THRESH_SRC_MANUAL));
+    AMP_WR(MAX98373_R20E1_LIMITER_ATK_REL_RATES,
+           MAX98373_LIMITER_ATTACK_40US | MAX98373_LIMITER_RELEASE_163MS);
+    AMP_UPD(MAX98373_R20E2_LIMITER_EN, MAX98373_LIMITER_EN_MASK, MAX98373_LIMITER_ENABLE);
+
     AMP_UPD(MAX98373_R2043_AMP_EN, 0x01, 0x01);               /* speaker enable */
 
     /* set_fmt: DSP_B -> TDM mode 0, normal BCLK polarity */
