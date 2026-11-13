@@ -1,7 +1,7 @@
 param(
     [string]$Subject = 'CN=CrosSofAudio GitHub Actions Test',
     [ValidateRange(1, 3650)]
-    [int]$ValidityDays = 30
+    [int]$ValidityDays = 3650
 )
 
 $ErrorActionPreference = 'Stop'

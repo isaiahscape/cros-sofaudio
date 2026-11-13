@@ -91,6 +91,19 @@ if %BUILD_EXIT% equ 0 (
         goto :BuildDone
     )
 
+    :: GitHub-hosted WDK builds can remove certificates created before MSBuild.
+    :: Generate the ephemeral CI signer only after compilation/catalog creation.
+    if /i "!GENERATE_CI_SIGNING_CERTIFICATE!"=="1" (
+        set "SIGN_CERT_SHA1="
+        for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\New-CiSigningCertificate.ps1"`) do set "SIGN_CERT_SHA1=%%i"
+        if not defined SIGN_CERT_SHA1 (
+            echo [ERROR] Could not generate the ephemeral CI signing certificate.
+            set "BUILD_RESULT=1"
+            goto :BuildDone
+        )
+        echo [INFO] Generated ephemeral CI signing certificate !SIGN_CERT_SHA1!.
+    )
+
     set "SIGNTOOL="
     for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\Find-SignTool.ps1"`) do set "SIGNTOOL=%%i"
     if not defined SIGNTOOL (
