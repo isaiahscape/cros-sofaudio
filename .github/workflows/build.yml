@@ -102,23 +102,35 @@ jobs:
           "### Toolchain`n- Runner: windows-2022`n- Visual Studio: $vsPath`n- SDK/WDK: $kitVersion`n- KMDF: 1.33" |
               Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
-      - name: Create ephemeral test-signing certificate
+      - name: Create certificate, build, generate catalogs, sign, and verify
         id: signing
         shell: pwsh
         run: |
           $subject = "CN=CrosSofAudio GitHub Actions $env:GITHUB_RUN_ID"
-          $thumbprint = (& .\build-tools\New-CiSigningCertificate.ps1 -Subject $subject -ValidityDays 3650 | Select-Object -Last 1).Trim()
+          $thumbprint = (& powershell.exe -NoProfile -ExecutionPolicy Bypass `
+              -File .\build-tools\New-CiSigningCertificate.ps1 `
+              -Subject $subject `
+              -ValidityDays 3650 | Select-Object -Last 1).Trim()
           if ($thumbprint -notmatch '^[0-9A-F]{40}$') {
               throw "Invalid certificate thumbprint returned by CI setup: $thumbprint"
           }
 
+          # Keep this in the current process so cmd.exe and Windows PowerShell
+          # inherit it directly; GITHUB_ENV is retained for later diagnostics.
+          $env:SIGN_CERT_SHA1 = $thumbprint
           "SIGN_CERT_SHA1=$thumbprint" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "thumbprint=$thumbprint" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Created ephemeral CI signing certificate $thumbprint"
 
-      - name: Build, generate catalogs, sign, and verify
-        shell: pwsh
-        run: |
+          $probeCertificate = Join-Path $env:RUNNER_TEMP 'cros-sofaudio-ci-signer.cer'
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+              -File .\build-tools\Resolve-SigningCertificate.ps1 `
+              -CertificatePath .\ChromebookAudio.cer `
+              -OutputPath $probeCertificate | Out-Host
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $probeCertificate)) {
+              throw 'The generated CI certificate could not be reopened with its private key.'
+          }
+
           & cmd.exe /d /c build.cmd
           if ($LASTEXITCODE -ne 0) {
               throw "build.cmd failed with exit code $LASTEXITCODE"

@@ -4,6 +4,7 @@ setlocal EnableDelayedExpansion
 set "ROOT_DIR=%~dp0"
 set "ERROR_LOG=%ROOT_DIR%build_errors.log"
 set "FULL_LOG=%ROOT_DIR%build_full.log"
+set "BUILD_RESULT=0"
 
 echo ====================================================================
 echo  Chromebook SOF Audio Drivers (MAX98373 + NAU88L25) - Build Script
@@ -15,7 +16,8 @@ if not exist "!VSWHERE!" (
     echo [ERROR] vswhere.exe not found at '!VSWHERE!'. > "!ERROR_LOG!"
     echo Please install Visual Studio 2022/2026 or Build Tools. >> "!ERROR_LOG!"
     type "!ERROR_LOG!"
-    exit /b 1
+    set "BUILD_RESULT=1"
+    goto :BuildDone
 )
 
 for /f "usebackq tokens=*" %%i in (`"!VSWHERE!" -latest -products * -requires Microsoft.Component.MSBuild -property installationPath`) do (
@@ -25,7 +27,8 @@ for /f "usebackq tokens=*" %%i in (`"!VSWHERE!" -latest -products * -requires Mi
 if not defined VS_PATH (
     echo [ERROR] Visual Studio with MSBuild not detected! > "!ERROR_LOG!"
     type "!ERROR_LOG!"
-    exit /b 1
+    set "BUILD_RESULT=1"
+    goto :BuildDone
 )
 
 echo [INFO] Found Visual Studio at: "!VS_PATH!"
@@ -34,7 +37,8 @@ set "MSBUILD=!VS_PATH!\MSBuild\Current\Bin\MSBuild.exe"
 if not exist "!MSBUILD!" (
     echo [ERROR] MSBuild.exe not found at '!MSBUILD!'. > "!ERROR_LOG!"
     type "!ERROR_LOG!"
-    exit /b 1
+    set "BUILD_RESULT=1"
+    goto :BuildDone
 )
 
 echo [INFO] Building Solution (Release ^| x64)...
@@ -83,14 +87,16 @@ if %BUILD_EXIT% equ 0 (
         "%ROOT_DIR%x64\Release\CsAudioIntcsof\csaudiointcsof.cat"
     ) do if not exist "%%~c" (
         echo [ERROR] Inf2Cat did not generate %%~c.
-        exit /b 1
+        set "BUILD_RESULT=1"
+        goto :BuildDone
     )
 
     set "SIGNTOOL="
     for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\Find-SignTool.ps1"`) do set "SIGNTOOL=%%i"
     if not defined SIGNTOOL (
         echo [ERROR] signtool.exe was not found in the installed Windows Driver Kit.
-        exit /b 1
+        set "BUILD_RESULT=1"
+        goto :BuildDone
     )
 
     set "SIGN_CERT_STORE="
@@ -101,7 +107,8 @@ if %BUILD_EXIT% equ 0 (
     )
     if not defined RESOLVED_SIGN_CERT_SHA1 (
         echo [ERROR] Could not resolve the driver signing certificate and private key.
-        exit /b 1
+        set "BUILD_RESULT=1"
+        goto :BuildDone
     )
 
     set "SIGN_STORE_ARGS=/s My"
@@ -117,7 +124,8 @@ if %BUILD_EXIT% equ 0 (
         "%ROOT_DIR%x64\Release\csaudioendpointswitcher.exe"
     if !ERRORLEVEL! neq 0 (
         echo [ERROR] Driver package signing failed.
-        exit /b 1
+        set "BUILD_RESULT=1"
+        goto :BuildDone
     )
 
     powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\Test-DriverSignatures.ps1" ^
@@ -125,7 +133,8 @@ if %BUILD_EXIT% equ 0 (
         -Paths "%ROOT_DIR%x64\Release\Max98373Audio\Max98373Audio.sys;%ROOT_DIR%x64\Release\Max98373Audio\max98373audio.cat;%ROOT_DIR%x64\Release\Nau8825Audio\Nau8825Audio.sys;%ROOT_DIR%x64\Release\Nau8825Audio\nau8825audio.cat;%ROOT_DIR%x64\Release\SklHdaudBus\SklHdaudBus.sys;%ROOT_DIR%x64\Release\SklHdaudBus\sklhdaudbus.cat;%ROOT_DIR%x64\Release\CsAudioIntcsof\CsAudioIntcsof.sys;%ROOT_DIR%x64\Release\CsAudioIntcsof\csaudiointcsof.cat;%ROOT_DIR%x64\Release\CrosAudioTest.exe;%ROOT_DIR%x64\Release\csaudioendpointswitcher.exe"
     if !ERRORLEVEL! neq 0 (
         echo [ERROR] One or more build outputs were signed by a different certificate.
-        exit /b 1
+        set "BUILD_RESULT=1"
+        goto :BuildDone
     )
 
     for %%d in (Max98373Audio Nau8825Audio SklHdaudBus CsAudioIntcsof) do (
@@ -175,7 +184,8 @@ if %BUILD_EXIT% equ 0 (
     )
     echo --------------------------------------------------------------------
     echo ====================================================================
-    exit /b %BUILD_EXIT%
+    set "BUILD_RESULT=%BUILD_EXIT%"
 )
 
-endlocal
+:BuildDone
+endlocal & exit /b %BUILD_RESULT%
