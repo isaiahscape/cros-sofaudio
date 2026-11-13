@@ -11,7 +11,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <ProjectGuid>{88250001-8825-4B88-A882-8825NAU88L25}</ProjectGuid>
+    <ProjectGuid>{88250001-8825-4B88-A882-8825BA882501}</ProjectGuid>
     <TemplateGuid>{1bc93793-694f-48fe-9372-81e2b05556fd}</TemplateGuid>
     <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
     <MinimumVisualStudioVersion>12.0</MinimumVisualStudioVersion>
@@ -23,7 +23,7 @@
     <KMDF_VERSION_MINOR>33</KMDF_VERSION_MINOR>
     <WindowsTargetPlatformVersion>$(LatestTargetPlatformVersion)</WindowsTargetPlatformVersion>
     <InfVerif_Enabled>false</InfVerif_Enabled>
-    <Inf2Cat_Enabled>false</Inf2Cat_Enabled>
+    <Inf2Cat_Enabled>true</Inf2Cat_Enabled>
     <SkipPackageVerification>true</SkipPackageVerification>
     <SignMode>Off</SignMode>
     <ApiValidator_Enable>false</ApiValidator_Enable>

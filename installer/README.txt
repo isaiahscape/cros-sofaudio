@@ -12,6 +12,9 @@ Supported laptops
 Install
   1. Double-click Install.cmd (it asks for administrator rights).
   2. Reboot.
+  The installer verifies every driver signature, disables the Microsoft
+  Vulnerable Driver Blocklist for these test-signed drivers, and enables Test
+  Mode with permission. These policy changes require the reboot in step 2.
   Windows then shows "Speakers" and "Headphones". The auto-switcher moves
   playback to Headphones when you plug in and back to Speakers when you
   unplug.
@@ -24,6 +27,7 @@ What it contains
   Drivers\Max98373Audio   speaker amps
   Drivers\Nau8825Audio    headphone codec + jack detection
   Switcher\               auto-switch service (csaudioswitcher)
+  Tools\cros_audio_test.exe  signed codec and jack diagnostic utility
 
 Volume tuning (registry, HKLM\SOFTWARE\CrosSofAudio, DWORD; reboot after)
   SpeakerDspAttenDb       speaker attenuation in dB, default 0 (loudest)
@@ -40,7 +44,8 @@ Jack detection
 
 Problems
   - Collect-Logs.cmd writes audio-log.txt with everything needed to debug.
-  - Uninstall.cmd removes everything (Windows falls back to older drivers).
+  - Uninstall.cmd removes everything, restores the prior vulnerable-driver
+    blocklist setting, and lets Windows fall back to older drivers.
   - Disable the DSP boot:
       reg add HKLM\SOFTWARE\CrosSofAudio /v EnableDspBoot /t REG_DWORD /d 0 /f
   - Blue screen at boot: start Safe Mode and run Uninstall.cmd.

@@ -11,11 +11,15 @@
  */
 
 #define WIN32_LEAN_AND_MEAN
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
 #include <windows.h>
 #include <winioctl.h>
 #include <mmreg.h>
 #include <setupapi.h>
 #include <mmdeviceapi.h>
+#include <audiopolicy.h>
 #include <initguid.h>                       /* must precede the PKEY header so the key is defined here */
 #include <functiondiscoverykeys_devpkey.h>
 #include <stdio.h>
@@ -74,6 +78,11 @@ static WCHAR g_SpeakerId[MAX_PATH]     = { 0 };
 static WCHAR g_HeadphoneId[MAX_PATH]   = { 0 };
 static WCHAR g_MicArrayId[MAX_PATH]    = { 0 };
 static WCHAR g_HeadsetMicId[MAX_PATH]  = { 0 };
+static BOOL  g_HideHeadphoneWhenIdle   = FALSE;
+static BOOL  g_HideHeadsetMicWhenIdle  = FALSE;
+static ULONGLONG g_HideHeadphoneAfter  = 0;
+static ULONGLONG g_HideHeadsetMicAfter = 0;
+static CSAUDIO_JACK_STATE g_LastRoutingState = CSAUDIO_JACK_UNPLUGGED;
 static CRITICAL_SECTION g_Lock;
 
 static void LogMsg(const WCHAR* fmt, ...) {
@@ -125,7 +134,6 @@ static BOOL IsOurDevice(const WCHAR* name) {
 
 static void RefreshEndpoints() {
     EnterCriticalSection(&g_Lock);
-    g_SpeakerId[0] = g_HeadphoneId[0] = g_MicArrayId[0] = g_HeadsetMicId[0] = L'\0';
 
     IMMDeviceEnumerator* pEnum = NULL;
     HRESULT hr = CoCreateInstance(
@@ -144,6 +152,9 @@ static void RefreshEndpoints() {
     // 1. Scan Render Endpoints (Speakers vs Headphones)
     IMMDeviceCollection* pRenderCol = NULL;
     if (SUCCEEDED(pEnum->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE | DEVICE_STATE_DISABLED | DEVICE_STATE_UNPLUGGED, &pRenderCol)) && pRenderCol) {
+        // Clear a flow only after its enumeration succeeds. A transient Core
+        // Audio failure must not erase otherwise valid cached endpoint IDs.
+        g_SpeakerId[0] = g_HeadphoneId[0] = L'\0';
         UINT count = 0;
         pRenderCol->GetCount(&count);
         for (UINT i = 0; i < count; i++) {
@@ -157,7 +168,7 @@ static void RefreshEndpoints() {
                     PROPVARIANT pv;
                     PropVariantInit(&pv);
                     if (SUCCEEDED(pProps->GetValue(PKEY_Device_FriendlyName, &pv)) && pv.pwszVal) {
-                        if (IsOurDevice(pv.pwszVal)) {
+                        if (pId && IsOurDevice(pv.pwszVal)) {
                             if (wcsstr(pv.pwszVal, L"Headphone")) {
                                 StringCchCopyW(g_HeadphoneId, ARRAYSIZE(g_HeadphoneId), pId);
                                 LogMsg(L"[SWITCHER] Found Headphones endpoint: %s (%s)", pv.pwszVal, pId);
@@ -180,6 +191,7 @@ static void RefreshEndpoints() {
     // 2. Scan Capture Endpoints (Mic Array vs Headset Mic)
     IMMDeviceCollection* pCaptureCol = NULL;
     if (SUCCEEDED(pEnum->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE | DEVICE_STATE_DISABLED | DEVICE_STATE_UNPLUGGED, &pCaptureCol)) && pCaptureCol) {
+        g_MicArrayId[0] = g_HeadsetMicId[0] = L'\0';
         UINT count = 0;
         pCaptureCol->GetCount(&count);
         for (UINT i = 0; i < count; i++) {
@@ -193,11 +205,18 @@ static void RefreshEndpoints() {
                     PROPVARIANT pv;
                     PropVariantInit(&pv);
                     if (SUCCEEDED(pProps->GetValue(PKEY_Device_FriendlyName, &pv)) && pv.pwszVal) {
-                        if (IsOurDevice(pv.pwszVal)) {
-                            if (wcsstr(pv.pwszVal, L"Array")) {
+                        if (pId && IsOurDevice(pv.pwszVal)) {
+                            if (wcsstr(pv.pwszVal, L"Headset")) {
+                                StringCchCopyW(g_HeadsetMicId, ARRAYSIZE(g_HeadsetMicId), pId);
+                                LogMsg(L"[SWITCHER] Found Headset Mic endpoint: %s (%s)", pv.pwszVal, pId);
+                            } else if (wcsstr(pv.pwszVal, L"Internal") ||
+                                       wcsstr(pv.pwszVal, L"Array")) {
                                 StringCchCopyW(g_MicArrayId, ARRAYSIZE(g_MicArrayId), pId);
                                 LogMsg(L"[SWITCHER] Found Mic Array endpoint: %s (%s)", pv.pwszVal, pId);
                             } else if (wcsstr(pv.pwszVal, L"Microphone")) {
+                                // Windows can collapse the jack endpoint name to
+                                // just "Microphone (...)"; it is the remaining
+                                // non-array capture endpoint.
                                 StringCchCopyW(g_HeadsetMicId, ARRAYSIZE(g_HeadsetMicId), pId);
                                 LogMsg(L"[SWITCHER] Found Headset Mic endpoint: %s (%s)", pv.pwszVal, pId);
                             }
@@ -221,8 +240,158 @@ static void RefreshEndpoints() {
  * Jack State Application Logic
  * ========================================================================= */
 
+static BOOL SetEndpointVisible(IPolicyConfig* pConfig, PCWSTR deviceId, BOOL visible, PCWSTR label) {
+    if (!deviceId || !deviceId[0]) return FALSE;
+
+    HRESULT hr = pConfig->SetEndpointVisibility(deviceId, visible);
+    if (FAILED(hr)) {
+        LogMsg(L"[SWITCHER] ERROR: SetEndpointVisibility(%s, %s) failed (0x%08X)",
+            label, visible ? L"visible" : L"hidden", hr);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static PCWSTR RoleName(ERole role) {
+    switch (role) {
+    case eConsole:        return L"Console";
+    case eMultimedia:     return L"Multimedia";
+    case eCommunications: return L"Communications";
+    default:              return L"Unknown";
+    }
+}
+
+static BOOL SetEndpointAsDefault(IPolicyConfig* pConfig, PCWSTR deviceId, PCWSTR label) {
+    if (!deviceId || !deviceId[0]) return FALSE;
+
+    // Move the communications role first. Discord and other VoIP clients watch
+    // that role and can otherwise reopen the endpoint that is about to go away.
+    const ERole roles[] = { eCommunications, eMultimedia, eConsole };
+    BOOL allSucceeded = TRUE;
+
+    for (int i = 0; i < ARRAYSIZE(roles); i++) {
+        HRESULT hr = E_FAIL;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            hr = pConfig->SetDefaultEndpoint(deviceId, roles[i]);
+            if (SUCCEEDED(hr)) break;
+            Sleep(100);
+        }
+        if (FAILED(hr)) {
+            LogMsg(L"[SWITCHER] ERROR: Setting %s as the %s default failed (0x%08X)",
+                label, RoleName(roles[i]), hr);
+            allSucceeded = FALSE;
+        }
+    }
+
+    return allSucceeded;
+}
+
+/*
+ * Hiding an endpoint tears down every WASAPI session attached to it. That is
+ * especially visible in Discord, which keeps a communications stream open.
+ * Only hide a routed-away endpoint once all of its sessions have migrated.
+ */
+static BOOL EndpointIsIdle(PCWSTR deviceId) {
+    if (!deviceId || !deviceId[0]) return FALSE;
+
+    IMMDeviceEnumerator* pEnum = NULL;
+    IMMDevice* pDevice = NULL;
+    IAudioSessionManager2* pManager = NULL;
+    IAudioSessionEnumerator* pSessions = NULL;
+    BOOL idle = FALSE; // Be conservative if the session state cannot be queried.
+    int count = 0;
+
+    HRESULT hr = CoCreateInstance(
+        __uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL,
+        __uuidof(IMMDeviceEnumerator), (void**)&pEnum);
+    if (FAILED(hr) || !pEnum) goto Cleanup;
+
+    hr = pEnum->GetDevice(deviceId, &pDevice);
+    if (FAILED(hr) || !pDevice) goto Cleanup;
+
+    hr = pDevice->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, NULL, (void**)&pManager);
+    if (FAILED(hr) || !pManager) goto Cleanup;
+
+    hr = pManager->GetSessionEnumerator(&pSessions);
+    if (FAILED(hr) || !pSessions) goto Cleanup;
+
+    if (FAILED(pSessions->GetCount(&count))) goto Cleanup;
+
+    idle = TRUE;
+    for (int i = 0; i < count; i++) {
+        IAudioSessionControl* pSession = NULL;
+        if (SUCCEEDED(pSessions->GetSession(i, &pSession)) && pSession) {
+            AudioSessionState sessionState = AudioSessionStateInactive;
+            if (SUCCEEDED(pSession->GetState(&sessionState)) && sessionState == AudioSessionStateActive) {
+                idle = FALSE;
+                pSession->Release();
+                break;
+            }
+            pSession->Release();
+        }
+    }
+
+Cleanup:
+    if (pSessions) pSessions->Release();
+    if (pManager) pManager->Release();
+    if (pDevice) pDevice->Release();
+    if (pEnum) pEnum->Release();
+    return idle;
+}
+
+static void TryDeferredHidesLocked(IPolicyConfig* pConfig) {
+    ULONGLONG now = GetTickCount64();
+
+    if (g_HideHeadphoneWhenIdle && now >= g_HideHeadphoneAfter &&
+        g_HeadphoneId[0] && EndpointIsIdle(g_HeadphoneId)) {
+        if (SetEndpointVisible(pConfig, g_HeadphoneId, FALSE, L"Headphones")) {
+            g_HideHeadphoneWhenIdle = FALSE;
+            g_HideHeadphoneAfter = 0;
+            LogMsg(L"[SWITCHER] Headphones are idle and are now hidden.");
+        }
+    }
+
+    if (g_HideHeadsetMicWhenIdle && now >= g_HideHeadsetMicAfter &&
+        g_HeadsetMicId[0] && EndpointIsIdle(g_HeadsetMicId)) {
+        if (SetEndpointVisible(pConfig, g_HeadsetMicId, FALSE, L"Headset Microphone")) {
+            g_HideHeadsetMicWhenIdle = FALSE;
+            g_HideHeadsetMicAfter = 0;
+            LogMsg(L"[SWITCHER] Headset microphone is idle and is now hidden.");
+        }
+    }
+}
+
+static void TryDeferredHides() {
+    EnterCriticalSection(&g_Lock);
+    if (!g_HideHeadphoneWhenIdle && !g_HideHeadsetMicWhenIdle) {
+        LeaveCriticalSection(&g_Lock);
+        return;
+    }
+
+    IPolicyConfig* pConfig = NULL;
+    HRESULT hr = CoCreateInstance(
+        CLSID_PolicyConfigClient, NULL, CLSCTX_ALL,
+        IID_IPolicyConfig, (void**)&pConfig);
+    if (SUCCEEDED(hr) && pConfig) {
+        TryDeferredHidesLocked(pConfig);
+        pConfig->Release();
+    }
+    LeaveCriticalSection(&g_Lock);
+}
+
 static void ApplyJackState(CSAUDIO_JACK_STATE state) {
     EnterCriticalSection(&g_Lock);
+
+    UINT physicalState = ((UINT)state) &
+        (CSAUDIO_JACK_HEADPHONES_3POLE | CSAUDIO_JACK_HEADSET_4POLE | CSAUDIO_JACK_LINE_OUT);
+    if (state == CSAUDIO_JACK_UNPLUGGED) {
+        g_LastRoutingState = CSAUDIO_JACK_UNPLUGGED;
+    } else if (physicalState == CSAUDIO_JACK_HEADPHONES_3POLE ||
+        physicalState == CSAUDIO_JACK_HEADSET_4POLE ||
+        physicalState == CSAUDIO_JACK_LINE_OUT) {
+        g_LastRoutingState = (CSAUDIO_JACK_STATE)physicalState;
+    }
+    state = g_LastRoutingState; // Ignore button-only notifications for routing.
 
     IPolicyConfig* pConfig = NULL;
     HRESULT hr = CoCreateInstance(
@@ -240,64 +409,53 @@ static void ApplyJackState(CSAUDIO_JACK_STATE state) {
     }
 
     if (state == CSAUDIO_JACK_UNPLUGGED) {
-        LogMsg(L"[SWITCHER] -> Jack UNPLUGGED: Routing to Speakers + Mic Array; Hiding Headphones");
+        LogMsg(L"[SWITCHER] -> Jack UNPLUGGED: Routing to Speakers + Mic Array");
 
-        // 1. Hide Headphones endpoint so it does not appear in Windows volume flyout
-        if (g_HeadphoneId[0] != L'\0') {
-            pConfig->SetEndpointVisibility(g_HeadphoneId, FALSE);
-        }
-
-        // 2. Set default playback endpoint to Speakers
+        BOOL renderRouted = FALSE;
         if (g_SpeakerId[0] != L'\0') {
-            pConfig->SetEndpointVisibility(g_SpeakerId, TRUE);
-            pConfig->SetDefaultEndpoint(g_SpeakerId, eConsole);
-            pConfig->SetDefaultEndpoint(g_SpeakerId, eMultimedia);
-            pConfig->SetDefaultEndpoint(g_SpeakerId, eCommunications);
+            SetEndpointVisible(pConfig, g_SpeakerId, TRUE, L"Speakers");
+            renderRouted = SetEndpointAsDefault(pConfig, g_SpeakerId, L"Speakers");
         }
 
-        // 3. Hide Headset Mic endpoint
-        if (g_HeadsetMicId[0] != L'\0') {
-            pConfig->SetEndpointVisibility(g_HeadsetMicId, FALSE);
-        }
-
-        // 4. Set default capture endpoint to Microphone Array
+        BOOL captureRouted = FALSE;
         if (g_MicArrayId[0] != L'\0') {
-            pConfig->SetEndpointVisibility(g_MicArrayId, TRUE);
-            pConfig->SetDefaultEndpoint(g_MicArrayId, eConsole);
-            pConfig->SetDefaultEndpoint(g_MicArrayId, eMultimedia);
-            pConfig->SetDefaultEndpoint(g_MicArrayId, eCommunications);
+            SetEndpointVisible(pConfig, g_MicArrayId, TRUE, L"Internal Microphone");
+            captureRouted = SetEndpointAsDefault(pConfig, g_MicArrayId, L"Internal Microphone");
         }
+
+        // Never invalidate an active Discord/WASAPI stream. The monitor loop
+        // retries these hides after active sessions have migrated.
+        g_HideHeadphoneWhenIdle = renderRouted && g_HeadphoneId[0] != L'\0';
+        g_HideHeadsetMicWhenIdle = captureRouted && g_HeadsetMicId[0] != L'\0';
+        g_HideHeadphoneAfter = GetTickCount64() + 5000;
+        g_HideHeadsetMicAfter = GetTickCount64() + 5000;
+        TryDeferredHidesLocked(pConfig);
     } else {
         BOOL is4Pole = (state == CSAUDIO_JACK_HEADSET_4POLE);
         LogMsg(L"[SWITCHER] -> Jack DETECTED (%s): Routing to Headphones; Making visible",
             is4Pole ? L"4-Pole Headset with Mic" : L"3-Pole Stereo Headphones");
 
-        // 1. Make Headphones endpoint visible in Windows volume flyout
+        g_HideHeadphoneWhenIdle = FALSE;
+        g_HideHeadphoneAfter = 0;
         if (g_HeadphoneId[0] != L'\0') {
-            pConfig->SetEndpointVisibility(g_HeadphoneId, TRUE);
-            // 2. Set default playback endpoint to Headphones
-            pConfig->SetDefaultEndpoint(g_HeadphoneId, eConsole);
-            pConfig->SetDefaultEndpoint(g_HeadphoneId, eMultimedia);
-            pConfig->SetDefaultEndpoint(g_HeadphoneId, eCommunications);
+            SetEndpointVisible(pConfig, g_HeadphoneId, TRUE, L"Headphones");
+            SetEndpointAsDefault(pConfig, g_HeadphoneId, L"Headphones");
         }
 
         if (is4Pole && g_HeadsetMicId[0] != L'\0') {
-            // 3. Make Headset Mic visible and set default capture
-            pConfig->SetEndpointVisibility(g_HeadsetMicId, TRUE);
-            pConfig->SetDefaultEndpoint(g_HeadsetMicId, eConsole);
-            pConfig->SetDefaultEndpoint(g_HeadsetMicId, eMultimedia);
-            pConfig->SetDefaultEndpoint(g_HeadsetMicId, eCommunications);
+            g_HideHeadsetMicWhenIdle = FALSE;
+            g_HideHeadsetMicAfter = 0;
+            SetEndpointVisible(pConfig, g_HeadsetMicId, TRUE, L"Headset Microphone");
+            SetEndpointAsDefault(pConfig, g_HeadsetMicId, L"Headset Microphone");
         } else {
-            // Standard TRS 3-pole has no mic, keep Mic Array default and Headset Mic hidden
-            if (g_HeadsetMicId[0] != L'\0') {
-                pConfig->SetEndpointVisibility(g_HeadsetMicId, FALSE);
-            }
+            BOOL captureRouted = FALSE;
             if (g_MicArrayId[0] != L'\0') {
-                pConfig->SetEndpointVisibility(g_MicArrayId, TRUE);
-                pConfig->SetDefaultEndpoint(g_MicArrayId, eConsole);
-                pConfig->SetDefaultEndpoint(g_MicArrayId, eMultimedia);
-                pConfig->SetDefaultEndpoint(g_MicArrayId, eCommunications);
+                SetEndpointVisible(pConfig, g_MicArrayId, TRUE, L"Internal Microphone");
+                captureRouted = SetEndpointAsDefault(pConfig, g_MicArrayId, L"Internal Microphone");
             }
+            g_HideHeadsetMicWhenIdle = captureRouted && g_HeadsetMicId[0] != L'\0';
+            g_HideHeadsetMicAfter = GetTickCount64() + 5000;
+            TryDeferredHidesLocked(pConfig);
         }
     }
 
@@ -350,117 +508,208 @@ static HANDLE OpenNau8825Device() {
     return hDevice;
 }
 
-static DWORD WINAPI MonitorWorkerThread(LPVOID lpParam) {
-    UNREFERENCED_PARAMETER(lpParam);
+static BOOL StopRequested() {
+    return WaitForSingleObject(g_StopEvent, 0) == WAIT_OBJECT_0;
+}
 
-    CoInitializeEx(NULL, COINIT_MULTITHREADED);
-
-    LogMsg(L"[SWITCHER] Monitor worker thread started.");
-
-    // Initial discovery of endpoints
-    RefreshEndpoints();
-
-    // Loop until NAU8825 device is discovered (waiting quietly without busy spin)
-    while (WaitForSingleObject(g_StopEvent, 0) != WAIT_OBJECT_0) {
-        g_Nau8825Device = OpenNau8825Device();
-        if (g_Nau8825Device != INVALID_HANDLE_VALUE) {
-            break;
-        }
-        LogMsg(L"[SWITCHER] Waiting for NAU8825 driver interface to arrive...");
-        if (WaitForSingleObject(g_StopEvent, 3000) == WAIT_OBJECT_0) {
-            CoUninitialize();
-            return 0;
-        }
-    }
-
-    // Query initial jack state
-    CSAUDIO_JACK_STATE currentState = CSAUDIO_JACK_UNPLUGGED;
-    DWORD bytesReturned = 0;
-    OVERLAPPED ovInitial = { 0 };
-    ovInitial.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-
-    if (DeviceIoControl(
-        g_Nau8825Device,
-        IOCTL_CSAUDIO_GET_JACK_STATE,
-        NULL, 0,
-        &currentState, sizeof(currentState),
-        &bytesReturned,
-        &ovInitial
-    ) || GetLastError() == ERROR_IO_PENDING) {
-        GetOverlappedResult(g_Nau8825Device, &ovInitial, &bytesReturned, TRUE);
-    }
-    CloseHandle(ovInitial.hEvent);
-
-    LogMsg(L"[SWITCHER] Initial NAU8825 Jack State: 0x%02X (%s)",
-        currentState,
-        currentState == CSAUDIO_JACK_UNPLUGGED ? L"UNPLUGGED" :
-        (currentState == CSAUDIO_JACK_HEADPHONES_3POLE ? L"3-POLE HEADPHONES" : L"4-POLE HEADSET"));
-
-    // At boot the audio endpoints can appear after this service starts:
-    // wait (up to ~60 s) until our Speakers endpoint is known.
-    for (int i = 0; i < 30 && g_SpeakerId[0] == L'\0'; i++) {
-        if (WaitForSingleObject(g_StopEvent, 2000) == WAIT_OBJECT_0) break;
-        RefreshEndpoints();
-    }
-
-    ApplyJackState(currentState);
-
-    // Continuous async notification loop
-    OVERLAPPED ovNotify = { 0 };
-    ovNotify.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-
-    HANDLE waitHandles[2] = { g_StopEvent, ovNotify.hEvent };
-
-    while (TRUE) {
-        ResetEvent(ovNotify.hEvent);
-        CSAUDIO_JACK_STATE nextState = CSAUDIO_JACK_UNPLUGGED;
-
-        BOOL ok = DeviceIoControl(
-            g_Nau8825Device,
-            IOCTL_CSAUDIO_REGISTER_JACK_NOTIFICATION,
-            NULL, 0,
-            &nextState, sizeof(nextState),
-            &bytesReturned,
-            &ovNotify
-        );
-
-        if (!ok && GetLastError() != ERROR_IO_PENDING) {
-            LogMsg(L"[SWITCHER] IOCTL_CSAUDIO_REGISTER_JACK_NOTIFICATION failed: %lu. Re-enumerating...", GetLastError());
-            CloseHandle(g_Nau8825Device);
-            g_Nau8825Device = INVALID_HANDLE_VALUE;
-
-            while (WaitForSingleObject(g_StopEvent, 3000) != WAIT_OBJECT_0) {
-                g_Nau8825Device = OpenNau8825Device();
-                if (g_Nau8825Device != INVALID_HANDLE_VALUE) break;
-            }
-            if (g_Nau8825Device == INVALID_HANDLE_VALUE) break;
-            continue;
-        }
-
-        // Wait for jack notification event or stop request
-        DWORD waitRes = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);
-        if (waitRes == WAIT_OBJECT_0) {
-            // g_StopEvent signaled
-            CancelIo(g_Nau8825Device);
-            break;
-        } else if (waitRes == WAIT_OBJECT_0 + 1) {
-            // Notification received!
-            if (GetOverlappedResult(g_Nau8825Device, &ovNotify, &bytesReturned, FALSE)) {
-                LogMsg(L"[SWITCHER] >>> JACK EVENT RECEIVED! New State: 0x%02X", nextState);
-                // In case devices were recently reconfigured, refresh cached IDs
-                RefreshEndpoints();
-                ApplyJackState(nextState);
-            }
-        }
-    }
-
-    CloseHandle(ovNotify.hEvent);
-
+static void CloseNau8825Device() {
     if (g_Nau8825Device != INVALID_HANDLE_VALUE) {
         CloseHandle(g_Nau8825Device);
         g_Nau8825Device = INVALID_HANDLE_VALUE;
     }
+}
 
+static BOOL ConnectNau8825Device() {
+    DWORD attempts = 0;
+    while (!StopRequested()) {
+        g_Nau8825Device = OpenNau8825Device();
+        if (g_Nau8825Device != INVALID_HANDLE_VALUE) return TRUE;
+
+        // Avoid growing the persistent log every three seconds while drivers
+        // are still being installed or the codec is temporarily unavailable.
+        if ((attempts++ % 10) == 0) {
+            LogMsg(L"[SWITCHER] Waiting for NAU8825 driver interface to arrive...");
+        }
+        if (WaitForSingleObject(g_StopEvent, 3000) == WAIT_OBJECT_0) return FALSE;
+    }
+    return FALSE;
+}
+
+static BOOL WaitForPendingIo(
+    HANDLE device,
+    OVERLAPPED* overlapped,
+    DWORD* bytesReturned,
+    BOOL runMaintenance,
+    BOOL* stopped
+) {
+    HANDLE waitHandles[2] = { g_StopEvent, overlapped->hEvent };
+    *stopped = FALSE;
+
+    for (;;) {
+        DWORD timeout = INFINITE;
+        if (runMaintenance && (g_HideHeadphoneWhenIdle || g_HideHeadsetMicWhenIdle)) {
+            timeout = 2000;
+        }
+        DWORD waitResult = WaitForMultipleObjects(
+            ARRAYSIZE(waitHandles), waitHandles, FALSE, timeout);
+
+        if (waitResult == WAIT_OBJECT_0) {
+            *stopped = TRUE;
+            CancelIoEx(device, overlapped);
+            // The caller's output buffer must remain alive until cancellation
+            // has completed, so drain the OVERLAPPED before returning.
+            GetOverlappedResult(device, overlapped, bytesReturned, TRUE);
+            return FALSE;
+        }
+        if (waitResult == WAIT_OBJECT_0 + 1) {
+            return GetOverlappedResult(device, overlapped, bytesReturned, FALSE);
+        }
+        if (waitResult == WAIT_TIMEOUT && runMaintenance) {
+            TryDeferredHides();
+            continue;
+        }
+
+        LogMsg(L"[SWITCHER] ERROR: Waiting for codec I/O failed (%lu)", GetLastError());
+        CancelIoEx(device, overlapped);
+        GetOverlappedResult(device, overlapped, bytesReturned, TRUE);
+        return FALSE;
+    }
+}
+
+static BOOL QueryJackState(CSAUDIO_JACK_STATE* state, BOOL* stopped) {
+    *stopped = FALSE;
+    DWORD bytesReturned = 0;
+    OVERLAPPED overlapped = { 0 };
+    overlapped.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!overlapped.hEvent) return FALSE;
+
+    BOOL success = DeviceIoControl(
+        g_Nau8825Device,
+        IOCTL_CSAUDIO_GET_JACK_STATE,
+        NULL, 0,
+        state, sizeof(*state),
+        &bytesReturned,
+        &overlapped);
+
+    if (!success) {
+        DWORD error = GetLastError();
+        if (error == ERROR_IO_PENDING) {
+            success = WaitForPendingIo(
+                g_Nau8825Device, &overlapped, &bytesReturned, FALSE, stopped);
+        } else {
+            LogMsg(L"[SWITCHER] IOCTL_CSAUDIO_GET_JACK_STATE failed: %lu", error);
+        }
+    }
+
+    CloseHandle(overlapped.hEvent);
+    return success && bytesReturned == sizeof(*state);
+}
+
+static BOOL WaitForJackNotification(CSAUDIO_JACK_STATE* state, BOOL* stopped) {
+    *stopped = FALSE;
+    DWORD bytesReturned = 0;
+    OVERLAPPED overlapped = { 0 };
+    overlapped.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!overlapped.hEvent) return FALSE;
+
+    BOOL success = DeviceIoControl(
+        g_Nau8825Device,
+        IOCTL_CSAUDIO_REGISTER_JACK_NOTIFICATION,
+        NULL, 0,
+        state, sizeof(*state),
+        &bytesReturned,
+        &overlapped);
+
+    if (!success) {
+        DWORD error = GetLastError();
+        if (error == ERROR_IO_PENDING) {
+            success = WaitForPendingIo(
+                g_Nau8825Device, &overlapped, &bytesReturned, TRUE, stopped);
+            if (!success && !*stopped) {
+                LogMsg(L"[SWITCHER] Jack notification completed with error: %lu", GetLastError());
+            }
+        } else {
+            LogMsg(L"[SWITCHER] IOCTL_CSAUDIO_REGISTER_JACK_NOTIFICATION failed: %lu", error);
+        }
+    }
+
+    CloseHandle(overlapped.hEvent);
+    return success && bytesReturned == sizeof(*state);
+}
+
+static PCWSTR JackStateName(CSAUDIO_JACK_STATE state) {
+    switch (state) {
+    case CSAUDIO_JACK_UNPLUGGED:        return L"UNPLUGGED";
+    case CSAUDIO_JACK_HEADPHONES_3POLE: return L"3-POLE HEADPHONES";
+    case CSAUDIO_JACK_HEADSET_4POLE:    return L"4-POLE HEADSET";
+    case CSAUDIO_JACK_LINE_OUT:         return L"LINE OUT";
+    default:                            return L"BUTTON/UNKNOWN";
+    }
+}
+
+static DWORD WINAPI MonitorWorkerThread(LPVOID lpParam) {
+    UNREFERENCED_PARAMETER(lpParam);
+
+    HRESULT coResult = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    if (FAILED(coResult)) {
+        LogMsg(L"[SWITCHER] ERROR: COM initialization failed (0x%08X)", coResult);
+        SetEvent(g_StopEvent);
+        return (DWORD)coResult;
+    }
+
+    LogMsg(L"[SWITCHER] Monitor worker thread started.");
+    RefreshEndpoints();
+
+    // Reconnect forever. A codec power/PnP transition must not leave the SCM
+    // service marked running while its only worker has already exited.
+    while (!StopRequested()) {
+        if (!ConnectNau8825Device()) break;
+
+        BOOL stopped = FALSE;
+        CSAUDIO_JACK_STATE currentState = CSAUDIO_JACK_UNPLUGGED;
+        if (!QueryJackState(&currentState, &stopped)) {
+            CloseNau8825Device();
+            if (stopped) break;
+            WaitForSingleObject(g_StopEvent, 1000);
+            continue;
+        }
+
+        LogMsg(L"[SWITCHER] Initial NAU8825 Jack State: 0x%02X (%s)",
+            currentState, JackStateName(currentState));
+
+        // At boot, endpoint creation can lag the codec interface.
+        for (int i = 0; i < 30 && g_SpeakerId[0] == L'\0' && !StopRequested(); i++) {
+            if (WaitForSingleObject(g_StopEvent, 2000) == WAIT_OBJECT_0) break;
+            RefreshEndpoints();
+        }
+        if (StopRequested()) {
+            CloseNau8825Device();
+            break;
+        }
+
+        ApplyJackState(currentState);
+
+        while (!StopRequested()) {
+            CSAUDIO_JACK_STATE nextState = CSAUDIO_JACK_UNPLUGGED;
+            stopped = FALSE;
+            if (!WaitForJackNotification(&nextState, &stopped)) {
+                if (!stopped) {
+                    LogMsg(L"[SWITCHER] Codec notification channel lost; re-enumerating.");
+                }
+                break;
+            }
+
+            LogMsg(L"[SWITCHER] >>> JACK EVENT RECEIVED! New State: 0x%02X (%s)",
+                nextState, JackStateName(nextState));
+            RefreshEndpoints();
+            ApplyJackState(nextState);
+        }
+
+        CloseNau8825Device();
+        if (!StopRequested()) WaitForSingleObject(g_StopEvent, 1000);
+    }
+
+    CloseNau8825Device();
     LogMsg(L"[SWITCHER] Monitor worker thread exiting.");
     CoUninitialize();
     return 0;
@@ -476,7 +725,7 @@ VOID WINAPI ServiceCtrlHandler(DWORD request) {
     case SERVICE_CONTROL_SHUTDOWN:
         g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
         SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
-        SetEvent(g_StopEvent);
+        if (g_StopEvent) SetEvent(g_StopEvent);
         break;
     default:
         break;
@@ -493,7 +742,7 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv) {
 
     g_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
     g_ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
-    g_ServiceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
+    g_ServiceStatus.dwControlsAccepted = 0;
     g_ServiceStatus.dwWin32ExitCode = 0;
     g_ServiceStatus.dwServiceSpecificExitCode = 0;
     g_ServiceStatus.dwCheckPoint = 0;
@@ -502,22 +751,46 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv) {
 
     InitializeCriticalSection(&g_Lock);
     g_StopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!g_StopEvent) {
+        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+        g_ServiceStatus.dwWin32ExitCode = GetLastError();
+        SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+        DeleteCriticalSection(&g_Lock);
+        return;
+    }
 
     HANDLE hThread = CreateThread(NULL, 0, MonitorWorkerThread, NULL, 0, NULL);
+    if (!hThread) {
+        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+        g_ServiceStatus.dwWin32ExitCode = GetLastError();
+        SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+        CloseHandle(g_StopEvent);
+        g_StopEvent = NULL;
+        DeleteCriticalSection(&g_Lock);
+        return;
+    }
 
+    g_ServiceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
     g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
     SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
 
     WaitForSingleObject(g_StopEvent, INFINITE);
 
-    if (hThread) {
-        WaitForSingleObject(hThread, 5000);
-        CloseHandle(hThread);
+    // The worker cancels its outstanding overlapped request when this event is
+    // set. Wait for it before destroying the lock or event it still references.
+    WaitForSingleObject(hThread, INFINITE);
+    DWORD workerExitCode = 0;
+    if (GetExitCodeThread(hThread, &workerExitCode) && workerExitCode != 0) {
+        g_ServiceStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
+        g_ServiceStatus.dwServiceSpecificExitCode = workerExitCode;
     }
+    CloseHandle(hThread);
 
     CloseHandle(g_StopEvent);
+    g_StopEvent = NULL;
     DeleteCriticalSection(&g_Lock);
 
+    g_ServiceStatus.dwControlsAccepted = 0;
     g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
     SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
 }
@@ -552,19 +825,29 @@ int main(int argc, char* argv[]) {
 
         InitializeCriticalSection(&g_Lock);
         g_StopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+        if (!g_StopEvent) {
+            DeleteCriticalSection(&g_Lock);
+            return (int)GetLastError();
+        }
 
         HANDLE hThread = CreateThread(NULL, 0, MonitorWorkerThread, NULL, 0, NULL);
+        if (!hThread) {
+            DWORD error = GetLastError();
+            CloseHandle(g_StopEvent);
+            g_StopEvent = NULL;
+            DeleteCriticalSection(&g_Lock);
+            return (int)error;
+        }
 
         wprintf(L"Running. Press ENTER to stop...\n");
         getchar();
 
         SetEvent(g_StopEvent);
-        if (hThread) {
-            WaitForSingleObject(hThread, 5000);
-            CloseHandle(hThread);
-        }
+        WaitForSingleObject(hThread, INFINITE);
+        CloseHandle(hThread);
 
         CloseHandle(g_StopEvent);
+        g_StopEvent = NULL;
         DeleteCriticalSection(&g_Lock);
         return 0;
     }
@@ -575,6 +858,8 @@ int main(int argc, char* argv[]) {
         { NULL, NULL }
     };
 
-    StartServiceCtrlDispatcherW(ServiceTable);
+    if (!StartServiceCtrlDispatcherW(ServiceTable)) {
+        return (int)GetLastError();
+    }
     return 0;
 }

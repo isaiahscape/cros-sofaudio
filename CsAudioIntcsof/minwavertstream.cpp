@@ -437,7 +437,7 @@ NTSTATUS CMiniportWaveRTStream::SetState
                 return ntStatus;
             }
 
-            m_pMiniport->StartDMA();
+            ntStatus = m_pMiniport->StartDMA();
             if (!NT_SUCCESS(ntStatus)) {
                 return ntStatus;
             }

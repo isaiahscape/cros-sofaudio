@@ -9,6 +9,7 @@ Before installing the audio drivers on your Intel-based Chromebook running Windo
 1. **Custom UEFI Firmware:** Your Chromebook must have full UEFI firmware flashed (e.g., via **MrChromebox coreboot/UEFI firmware**) with ChromeOS Write-Protect disabled.
 2. **Complete 4-Driver Stack:** This repository now includes the complete audio stack: `SklHdaudBus` (Intel HD Audio / AudioDSP bus driver), `CsAudioIntcsof` (Intel SOF WaveRT driver), `Max98373Audio` (internal speakers), and `Nau8825Audio` (headphone jack & mic).
 3. **Test Signing Enabled:** Because these drivers are self-built open source drivers, Windows 11 requires Test Signing to be turned on.
+4. **Vulnerable Driver Blocklist:** `Install.cmd` disables the Microsoft vulnerable-driver blocklist after validating all package signatures. A reboot is required for this and Test Mode.
 
 ---
 
@@ -28,6 +29,9 @@ The script will locate your Visual Studio 2022 / WDK installation and build the 
 2. Select **Release** and **x64**.
 3. Build the Solution (`Ctrl + Shift + B`).
 
+#### Option C: GitHub Actions
+Run **Build Windows driver package** from the repository's Actions tab, or push to `main`/a `v*` tag. The workflow uses VS 2022, SDK/WDK 10.0.26100, KMDF 1.33, and an ephemeral test-signing certificate. Download the `cros-sofaudio-*-windows-x64-attempt-*` artifact when the run completes.
+
 ---
 
 ### 3. Installation Steps
@@ -39,12 +43,12 @@ The script will locate your Visual Studio 2022 / WDK installation and build the 
    *Reboot your Chromebook after setting this.*
 
 2. **Automated Driver Installation:**
-   Right-click `install-drivers.cmd` and select **Run as administrator**.
+   Extract the release/Actions ZIP, then double-click `Install.cmd`. It elevates itself, verifies every binary and catalog, configures the required driver policies, and installs the complete stack.
 
    Alternatively, install manually via `pnputil`:
    ```cmd
-   pnputil /add-driver "d:\Documents\sofaudio-driver\Max98373Audio\Max98373Audio.inf" /install
-   pnputil /add-driver "d:\Documents\sofaudio-driver\Nau8825Audio\Nau8825Audio.inf" /install
+   pnputil /add-driver ".\Drivers\Max98373Audio\Max98373Audio.inf" /install
+   pnputil /add-driver ".\Drivers\Nau8825Audio\Nau8825Audio.inf" /install
    ```
 
 3. **Verify in Device Manager:**
@@ -59,8 +63,9 @@ The script will locate your Visual Studio 2022 / WDK installation and build the 
 
 Launch the bundled diagnostic test tool:
 ```cmd
-x64\Release\cros_audio_test.exe
+Tools\cros_audio_test.exe
 ```
+For a source-tree build, the same utility is at `x64\Release\CrosAudioTest.exe`.
 
 This utility will:
 1. Verify I2C communication by reading the silicon revision IDs:
@@ -77,10 +82,11 @@ This utility will:
 ### 5. Uninstallation
 
 If you ever need to uninstall the drivers and restore Windows default audio drivers:
-1. Right-click `uninstall-drivers.cmd` and select **Run as administrator**.
+1. Double-click `Uninstall.cmd` from the extracted package and approve elevation.
 2. The script will:
    * Stop and remove the `csaudioswitcher` background service.
    * Remove all installed SOF driver packages (`csaudiointcsof`, `max98373audio`, `nau8825audio`, `sklhdaudbus`) from the Windows Driver Store via `pnputil /delete-driver /uninstall /force`.
+   * Restore the vulnerable-driver blocklist value that existed before installation.
    * Clean up firmware files (`sof-*.ri`) from `C:\Windows\System32\drivers\`.
    * Rescan hardware devices to let Windows reload fallback drivers.
 3. Reboot your system.

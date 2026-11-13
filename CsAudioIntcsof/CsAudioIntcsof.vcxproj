@@ -23,7 +23,7 @@
     <KMDF_VERSION_MINOR>33</KMDF_VERSION_MINOR>
     <WindowsTargetPlatformVersion>$(LatestTargetPlatformVersion)</WindowsTargetPlatformVersion>
     <InfVerif_Enabled>false</InfVerif_Enabled>
-    <Inf2Cat_Enabled>false</Inf2Cat_Enabled>
+    <Inf2Cat_Enabled>true</Inf2Cat_Enabled>
     <SkipPackageVerification>true</SkipPackageVerification>
     <SignMode>Off</SignMode>
     <ApiValidator_Enable>false</ApiValidator_Enable>
@@ -129,7 +129,7 @@
   </ItemGroup>
   <ItemGroup>
     <Inf Include="csaudiointcsof.inf">
-      <TimeStamp>18.3.0.0</TimeStamp>
+      <TimeStamp>18.3.1.0</TimeStamp>
     </Inf>
   </ItemGroup>
   <ItemGroup>

@@ -24,6 +24,7 @@ set "LOG=%~dp0audio-log.txt"
   echo == Settings ==
   reg query HKLM\SOFTWARE\CrosSofAudio /v *Atten*
   reg query HKLM\SOFTWARE\CrosSofAudio /v JackActiveLow
+  reg query HKLM\SYSTEM\CurrentControlSet\Control\CI\Config /v VulnerableDriverBlocklistEnable
   echo.
   echo == Switcher service ==
   sc query csaudioswitcher

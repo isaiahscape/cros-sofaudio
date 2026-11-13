@@ -1,0 +1,264 @@
+name: Build Windows driver package
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: Optional package version (for example, v1.2.1)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: driver-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Release x64 / WDK 10.0.26100
+    # windows-2025 intentionally omits the installed WDK. The pinned 2022 image
+    # contains VS 2022/v143, SDK+WDK 26100, KMDF 1.33, Inf2Cat, and SignTool.
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      WINDOWS_TARGET_PLATFORM_VERSION: 10.0.26100.0
+      MSBUILDDISABLENODEREUSE: 1
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Select package version
+        id: version
+        shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ inputs.package_version }}
+        run: |
+          if (-not [string]::IsNullOrWhiteSpace($env:REQUESTED_VERSION)) {
+              $version = $env:REQUESTED_VERSION.Trim()
+          } elseif ($env:GITHUB_REF_TYPE -eq 'tag') {
+              $version = $env:GITHUB_REF_NAME
+          } else {
+              $shortSha = $env:GITHUB_SHA.Substring(0, 8)
+              $version = "ci-$($env:GITHUB_RUN_NUMBER)-$shortSha"
+          }
+
+          $version = $version -replace '[^0-9A-Za-z._-]', '-'
+          if ([string]::IsNullOrWhiteSpace($version)) {
+              throw 'The package version resolved to an empty value.'
+          }
+
+          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Package version: $version"
+
+      - name: Verify Visual Studio and WDK requirements
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere)) {
+              throw "vswhere.exe is missing: $vswhere"
+          }
+
+          $vsPath = (& $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath | Select-Object -First 1)
+          if ([string]::IsNullOrWhiteSpace($vsPath)) {
+              throw 'Visual Studio 2022 with MSBuild was not found.'
+          }
+
+          $kitRoot = "${env:ProgramFiles(x86)}\Windows Kits\10"
+          $kitVersion = $env:WINDOWS_TARGET_PLATFORM_VERSION
+          $requirements = [ordered]@{
+              'MSBuild' = Join-Path $vsPath 'MSBuild\Current\Bin\MSBuild.exe'
+              'MSVC v143 x64 toolset' = Join-Path $vsPath 'MSBuild\Microsoft\VC\v170\Platforms\x64\PlatformToolsets\v143\Toolset.props'
+              'WDK VS integration' = Join-Path $vsPath 'MSBuild\Microsoft\VC\v170\Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0\Toolset.props'
+              'Windows SDK headers' = Join-Path $kitRoot "Include\$kitVersion\um\Windows.h"
+              'WDK kernel headers' = Join-Path $kitRoot "Include\$kitVersion\km\ntddk.h"
+              'KMDF 1.33 headers' = Join-Path $kitRoot 'Include\wdf\kmdf\1.33\wdf.h'
+              'WDK build targets' = Join-Path $kitRoot "build\$kitVersion\WindowsDriver.common.targets"
+              'Inf2Cat' = Join-Path $kitRoot "bin\$kitVersion\x86\Inf2Cat.exe"
+              'SignTool' = Join-Path $kitRoot "bin\$kitVersion\x64\signtool.exe"
+          }
+
+          $missing = @()
+          foreach ($item in $requirements.GetEnumerator()) {
+              if (Test-Path -LiteralPath $item.Value) {
+                  Write-Host "[OK] $($item.Key): $($item.Value)"
+              } else {
+                  Write-Warning "[MISSING] $($item.Key): $($item.Value)"
+                  $missing += $item.Key
+              }
+          }
+          if ($missing.Count -ne 0) {
+              throw "The GitHub runner is missing required build components: $($missing -join ', ')"
+          }
+
+          "### Toolchain`n- Runner: windows-2022`n- Visual Studio: $vsPath`n- SDK/WDK: $kitVersion`n- KMDF: 1.33" |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Create ephemeral test-signing certificate
+        id: signing
+        shell: pwsh
+        run: |
+          $subject = "CN=CrosSofAudio GitHub Actions $env:GITHUB_RUN_ID"
+          $thumbprint = (& .\build-tools\New-CiSigningCertificate.ps1 -Subject $subject -ValidityDays 3650 | Select-Object -Last 1).Trim()
+          if ($thumbprint -notmatch '^[0-9A-F]{40}$') {
+              throw "Invalid certificate thumbprint returned by CI setup: $thumbprint"
+          }
+
+          "SIGN_CERT_SHA1=$thumbprint" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "thumbprint=$thumbprint" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Created ephemeral CI signing certificate $thumbprint"
+
+      - name: Build, generate catalogs, sign, and verify
+        shell: pwsh
+        run: |
+          & cmd.exe /d /c build.cmd
+          if ($LASTEXITCODE -ne 0) {
+              throw "build.cmd failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Verify trusted build signatures
+        shell: pwsh
+        run: |
+          $certificatePath = Join-Path $env:GITHUB_WORKSPACE 'x64\Release\ChromebookAudio.cer'
+          $certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($certificatePath)
+          if ($certificate.Thumbprint -ne '${{ steps.signing.outputs.thumbprint }}') {
+              throw 'The exported build certificate does not match the CI signing certificate.'
+          }
+
+          foreach ($store in 'Root', 'TrustedPublisher') {
+              & certutil.exe -user -addstore -f $store $certificatePath | Out-Host
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Could not trust the CI certificate in CurrentUser\$store (code $LASTEXITCODE)."
+              }
+          }
+
+          $signedFiles = @(
+              'x64\Release\Max98373Audio\Max98373Audio.sys',
+              'x64\Release\Max98373Audio\max98373audio.cat',
+              'x64\Release\Nau8825Audio\Nau8825Audio.sys',
+              'x64\Release\Nau8825Audio\nau8825audio.cat',
+              'x64\Release\SklHdaudBus\SklHdaudBus.sys',
+              'x64\Release\SklHdaudBus\sklhdaudbus.cat',
+              'x64\Release\CsAudioIntcsof\CsAudioIntcsof.sys',
+              'x64\Release\CsAudioIntcsof\csaudiointcsof.cat',
+              'x64\Release\CrosAudioTest.exe',
+              'x64\Release\csaudioendpointswitcher.exe'
+          ) | ForEach-Object { Join-Path $env:GITHUB_WORKSPACE $_ }
+
+          & .\build-tools\Test-DriverSignatures.ps1 `
+              -CertificatePath $certificatePath `
+              -RequireValid `
+              -Paths ($signedFiles -join ';')
+
+      - name: Create installable package
+        shell: pwsh
+        run: |
+          & cmd.exe /d /c package.cmd "${{ steps.version.outputs.value }}"
+          if ($LASTEXITCODE -ne 0) {
+              throw "package.cmd failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Validate packaged installer
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.value }}'
+          $zipPath = Join-Path $env:GITHUB_WORKSPACE "cros-sofaudio-$version.zip"
+          if (-not (Test-Path -LiteralPath $zipPath -PathType Leaf)) {
+              throw "Expected package was not created: $zipPath"
+          }
+
+          $extractPath = Join-Path $env:RUNNER_TEMP 'cros-sofaudio-package-check'
+          if (Test-Path -LiteralPath $extractPath) {
+              Remove-Item -LiteralPath $extractPath -Recurse -Force
+          }
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $extractPath
+
+          $requiredFiles = @(
+              'ChromebookAudio.cer', 'Install.cmd', 'install.ps1',
+              'Uninstall.cmd', 'uninstall.ps1', 'Collect-Logs.cmd',
+              'README.txt', 'LICENSE', 'LICENCE.sof-firmware', 'VERSION.txt',
+              'Switcher\csaudioendpointswitcher.exe',
+              'Tools\cros_audio_test.exe',
+              'Drivers\SklHdaudBus\sklhdaudbus.inf',
+              'Drivers\SklHdaudBus\SklHdaudBus.sys',
+              'Drivers\SklHdaudBus\sklhdaudbus.cat',
+              'Drivers\CsAudioIntcsof\csaudiointcsof.inf',
+              'Drivers\CsAudioIntcsof\CsAudioIntcsof.sys',
+              'Drivers\CsAudioIntcsof\csaudiointcsof.cat',
+              'Drivers\CsAudioIntcsof\sof-adl.ri',
+              'Drivers\CsAudioIntcsof\sof-apl.ri',
+              'Drivers\CsAudioIntcsof\sof-cnl.ri',
+              'Drivers\CsAudioIntcsof\sof-glk.ri',
+              'Drivers\CsAudioIntcsof\sof-jsl.ri',
+              'Drivers\CsAudioIntcsof\sof-tgl.ri',
+              'Drivers\Nau8825Audio\Nau8825Audio.inf',
+              'Drivers\Nau8825Audio\Nau8825Audio.sys',
+              'Drivers\Nau8825Audio\nau8825audio.cat',
+              'Drivers\Max98373Audio\Max98373Audio.inf',
+              'Drivers\Max98373Audio\Max98373Audio.sys',
+              'Drivers\Max98373Audio\max98373audio.cat'
+          )
+          foreach ($relativePath in $requiredFiles) {
+              $fullPath = Join-Path $extractPath $relativePath
+              if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+                  throw "Package is missing required file: $relativePath"
+              }
+          }
+
+          $packagedVersion = (Get-Content -LiteralPath (Join-Path $extractPath 'VERSION.txt') -Raw).Trim()
+          if ($packagedVersion -ne $version) {
+              throw "VERSION.txt contains '$packagedVersion'; expected '$version'."
+          }
+
+          $forbiddenPrivateKeys = Get-ChildItem -LiteralPath $extractPath -Recurse -File |
+              Where-Object { $_.Extension -in '.pfx', '.p12', '.pvk', '.key' }
+          if ($forbiddenPrivateKeys) {
+              throw "Private key material was included in the artifact: $($forbiddenPrivateKeys.FullName -join ', ')"
+          }
+
+          $packageCertificate = Join-Path $extractPath 'ChromebookAudio.cer'
+          $signedFiles = Get-ChildItem -LiteralPath $extractPath -Recurse -File |
+              Where-Object { $_.Extension -in '.sys', '.cat', '.exe' } |
+              Select-Object -ExpandProperty FullName
+          & .\build-tools\Test-DriverSignatures.ps1 `
+              -CertificatePath $packageCertificate `
+              -RequireValid `
+              -Paths ($signedFiles -join ';')
+
+          $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+              '### Package',
+              "- File: cros-sofaudio-$version.zip",
+              "- SHA-256: $hash",
+              '- Signer: ${{ steps.signing.outputs.thumbprint }}'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload installable ZIP
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cros-sofaudio-${{ steps.version.outputs.value }}-windows-x64-attempt-${{ github.run_attempt }}
+          path: cros-sofaudio-${{ steps.version.outputs.value }}.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Upload symbols and build logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-diagnostics-${{ github.run_number }}-attempt-${{ github.run_attempt }}
+          path: |
+            build_errors.log
+            build_full.log
+            **/inf2catOutput.log
+            x64/Release/**/*.pdb
+          if-no-files-found: ignore
+          retention-days: 14

@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 
 set "ROOT_DIR=%~dp0"
-set "VERSION=v1.2"
+set "VERSION=v1.2.1"
 if not "%~1"=="" set "VERSION=%~1"
 
 set "DIST_DIR=%ROOT_DIR%dist\cros-sofaudio-%VERSION%"
@@ -20,6 +20,23 @@ if not exist "%ROOT_DIR%x64\Release\Max98373Audio\Max98373Audio.sys" (
         echo [ERROR] Build failed! Cannot package release.
         exit /b 1
     )
+)
+
+set "CERT_FILE=%ROOT_DIR%x64\Release\ChromebookAudio.cer"
+if not exist "%CERT_FILE%" set "CERT_FILE=%ROOT_DIR%ChromebookAudio.cer"
+if not exist "%CERT_FILE%" (
+    echo [ERROR] The public certificate for the build outputs is missing.
+    echo Run build.cmd with the signing certificate installed before packaging.
+    exit /b 1
+)
+
+echo [INFO] Verifying package signatures and signer certificate...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\Test-DriverSignatures.ps1" ^
+    -CertificatePath "%CERT_FILE%" ^
+    -Paths "%ROOT_DIR%x64\Release\Max98373Audio\Max98373Audio.sys;%ROOT_DIR%x64\Release\Max98373Audio\max98373audio.cat;%ROOT_DIR%x64\Release\Nau8825Audio\Nau8825Audio.sys;%ROOT_DIR%x64\Release\Nau8825Audio\nau8825audio.cat;%ROOT_DIR%x64\Release\SklHdaudBus\SklHdaudBus.sys;%ROOT_DIR%x64\Release\SklHdaudBus\sklhdaudbus.cat;%ROOT_DIR%x64\Release\CsAudioIntcsof\CsAudioIntcsof.sys;%ROOT_DIR%x64\Release\CsAudioIntcsof\csaudiointcsof.cat;%ROOT_DIR%x64\Release\CrosAudioTest.exe;%ROOT_DIR%x64\Release\csaudioendpointswitcher.exe"
+if !ERRORLEVEL! neq 0 (
+    echo [ERROR] Packaging stopped because the certificate does not match the signed binaries.
+    exit /b 1
 )
 
 if exist "%DIST_DIR%" (
@@ -46,6 +63,10 @@ echo [INFO] Copying endpoint switcher service...
 mkdir "%DIST_DIR%\Switcher"
 copy /y "%ROOT_DIR%x64\Release\csaudioendpointswitcher.exe" "%DIST_DIR%\Switcher\" >nul
 
+echo [INFO] Copying diagnostic utility...
+mkdir "%DIST_DIR%\Tools"
+copy /y "%ROOT_DIR%x64\Release\CrosAudioTest.exe" "%DIST_DIR%\Tools\cros_audio_test.exe" >nul
+
 echo [INFO] Copying installer scripts and documentation...
 copy /y "%ROOT_DIR%installer\Install.cmd" "%DIST_DIR%\" >nul
 copy /y "%ROOT_DIR%installer\install.ps1" "%DIST_DIR%\" >nul
@@ -53,11 +74,7 @@ copy /y "%ROOT_DIR%installer\Uninstall.cmd" "%DIST_DIR%\" >nul
 copy /y "%ROOT_DIR%installer\uninstall.ps1" "%DIST_DIR%\" >nul
 copy /y "%ROOT_DIR%installer\Collect-Logs.cmd" "%DIST_DIR%\" >nul
 
-if exist "%ROOT_DIR%installer\ChromebookAudio.cer" (
-    copy /y "%ROOT_DIR%installer\ChromebookAudio.cer" "%DIST_DIR%\" >nul
-) else if exist "%ROOT_DIR%ChromebookAudio.cer" (
-    copy /y "%ROOT_DIR%ChromebookAudio.cer" "%DIST_DIR%\" >nul
-)
+copy /y "%CERT_FILE%" "%DIST_DIR%\ChromebookAudio.cer" >nul
 
 if exist "%ROOT_DIR%installer\README.txt" (
     copy /y "%ROOT_DIR%installer\README.txt" "%DIST_DIR%\" >nul

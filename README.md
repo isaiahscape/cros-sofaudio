@@ -10,11 +10,11 @@
 
 > [!IMPORTANT]
 > **Mandatory Requirements:**
-> * **Disable Vulnerable Driver Blocklist (`regedit`):** So that the user won't require disabling Secure Boot anymore just to install this driver, configure this in `regedit`:
+> * **Disable Vulnerable Driver Blocklist (`regedit`):** The installer now configures this automatically after it verifies every package signature. For manual installation, configure:
 >   * Path: `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\CI\Config`
 >   * `(Optional: New > DWORD (32-bit))` > `VulnerableDriverBlocklistEnable` = `0`
 >   * *(Quick command via Administrator Command Prompt or PowerShell: `reg add "HKLM\SYSTEM\CurrentControlSet\Control\CI\Config" /v VulnerableDriverBlocklistEnable /t REG_DWORD /d 0 /f`)*
-> * **Secure Boot:** Disabling Secure Boot in UEFI firmware settings (e.g. MrChromebox UEFI setup) is **no longer required** if the registry setting above is applied. (If you choose not to apply the registry setting, Secure Boot must be disabled).
+> * **Secure Boot:** The blocklist setting is separate from kernel test-signing policy. If `bcdedit /set testsigning on` is rejected, disable Secure Boot in UEFI firmware settings (for example, MrChromebox UEFI setup), then enable Test Mode again.
 > * **Enable Test Signing:** Windows **must run in Test Mode** (`bcdedit /set testsigning on`) because these custom kernel-mode drivers are test-signed. The installer checks this and can turn it on automatically (a reboot is required).
 
 ---
@@ -76,7 +76,7 @@ On modern Chromebooks running coreboot / UEFI firmware (such as MrChromebox UEFI
 
 ## Quick Installation
 
-1. Download the latest `cros-sofaudio-v1.2.zip` from the [Releases](https://github.com/isaiahscape/cros-sofaudio/releases) page.
+1. Download the latest `cros-sofaudio-*.zip` from the [Releases](https://github.com/isaiahscape/cros-sofaudio/releases) page.
 2. Extract the ZIP archive on your Chromebook.
 3. Double-click **`Install.cmd`** (it requests administrator rights automatically).
    * It validates hardware compatibility, trusts the security certificate, pre-configures registry settings, installs all drivers via `pnputil`, and registers the auto-switcher service.
@@ -91,19 +91,26 @@ On modern Chromebooks running coreboot / UEFI firmware (such as MrChromebox UEFI
 * Windows 11 (x64)
 * Visual Studio 2022 or Build Tools with C++ workload
 * Windows Driver Kit (WDK) 10.0.22621+ or newer
+* The private key matching `ChromebookAudio.cer` installed in the Current User or Local Machine `My` certificate store (release maintainers can select another installed code-signing certificate with `SIGN_CERT_SHA1`)
 
 ### Build Command
 Run the automated build script:
 ```cmd
 build.cmd
 ```
-The script will build all driver projects in `Release|x64`, sign the binaries with the certificate, and output packages into `x64\Release\`.
+The script builds all driver projects in `Release|x64`, signs them, exports the exact public signer certificate used by the build, and verifies every catalog before reporting success. Output packages are written to `x64\Release\`.
+
+### GitHub Actions Builder
+
+`.github/workflows/build.yml` builds and packages the complete installer on the pinned `windows-2022` image using Visual Studio 2022 (`v143`), Windows SDK/WDK `10.0.26100.0`, KMDF 1.33, and `Release|x64`.
+
+Each CI run creates a unique self-signed code-signing certificate, signs every driver/catalog/tool, bundles only its public certificate, verifies the extracted ZIP, and uploads `cros-sofaudio-<version>.zip` as a workflow artifact. Its private key disappears with the hosted runner; no signing secret or private key is stored in the repository. CI artifacts are test-signed and still require Windows Test Mode, just like local development builds.
 
 ---
 
 ## Diagnostic Tool (`cros_audio_test.exe`)
 
-The bundled test utility connects to both driver interfaces via IOCTLs:
+The bundled `Tools\cros_audio_test.exe` utility connects to both driver interfaces via IOCTLs:
 * Reads silicon revision IDs (`0x21FF` for MAX98373, `0x58` for NAU88L25).
 * Real-time asynchronous background thread monitoring 3.5mm jack insertion/ejection.
 * Tests stream start/stop and pop-free volume ramping.

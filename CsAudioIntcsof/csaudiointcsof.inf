@@ -3,7 +3,7 @@ Signature   = "$Windows NT$"
 Class       = MEDIA
 Provider    = %ProviderName%
 ClassGUID   = {4d36e96c-e325-11ce-bfc1-08002be10318}
-DriverVer   = 10/22/2026, 18.3.0.0
+DriverVer   = 11/13/2026, 18.3.1.0
 CatalogFile = csaudiointcsof.cat
 PnpLockDown = 1
 
@@ -92,7 +92,9 @@ AddReg=CSAUDIOINTCSOF.I.TopologyMicArray1.AddReg
 HKR,,CLSID,,%Proxy.CLSID%
 HKR,,FriendlyName,,%CSAUDIOINTCSOF.TopologyMicArray1.szPname%
 HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
-HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,0x1
+; The stream miniport currently implements position-driven WaveRT only.  Do not
+; advertise pull/event mode until IMiniportWaveRTStreamNotification is present.
+HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,0x0
 
 ;======================================================
 ; capture interfaces: mic (jack)
@@ -109,7 +111,7 @@ AddReg=CSAUDIOINTCSOF.I.TopologyMicJack.AddReg
 HKR,,CLSID,,%Proxy.CLSID%
 HKR,,FriendlyName,,%CSAUDIOINTCSOF.TopologyMicJack.szPname%
 HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
-HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,0x1
+HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,0x0
 
 ;======================================================
 ; render interfaces: speaker (internal)
@@ -126,7 +128,7 @@ AddReg=CSAUDIOINTCSOF.I.TopologySpeaker.AddReg
 HKR,,CLSID,,%Proxy.CLSID%
 HKR,,FriendlyName,,%CSAUDIOINTCSOF.TopologySpeaker.szPname%
 HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
-HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,0x1
+HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,0x0
 
 ;======================================================
 ; render interfaces: headphones (jack)
@@ -143,7 +145,7 @@ AddReg=CSAUDIOINTCSOF.I.TopologyHeadphones.AddReg
 HKR,,CLSID,,%Proxy.CLSID%
 HKR,,FriendlyName,,%CSAUDIOINTCSOF.TopologyHeadphones.szPname%
 HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
-HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,0x1
+HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,0x0
 
 ;======================================================
 ; CSAUDIOINTCSOF_Inst Installation

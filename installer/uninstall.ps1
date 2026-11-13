@@ -36,10 +36,34 @@ if (-not $targets) {
     }
     pnputil /scan-devices | Out-Null
 }
+
+$policyBackup = Get-ItemProperty -Path $regRoot -ErrorAction SilentlyContinue
+if ($policyBackup.BlocklistBackupCaptured -eq 1) {
+    $ciConfigPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Config'
+    New-Item -Path $ciConfigPath -Force | Out-Null
+    $currentBlocklistValue = (Get-Item -Path $ciConfigPath).GetValue('VulnerableDriverBlocklistEnable', $null)
+    if ($currentBlocklistValue -eq 0) {
+        if ($policyBackup.BlocklistValueWasPresent -eq 1) {
+            New-ItemProperty -Path $ciConfigPath `
+                             -Name 'VulnerableDriverBlocklistEnable' `
+                             -PropertyType DWord `
+                             -Value ([int]$policyBackup.PreviousVulnerableDriverBlocklistEnable) `
+                             -Force | Out-Null
+        } else {
+            Remove-ItemProperty -Path $ciConfigPath -Name 'VulnerableDriverBlocklistEnable' -ErrorAction SilentlyContinue
+        }
+        Write-Host 'Restored the previous Microsoft Vulnerable Driver Blocklist setting.'
+    } else {
+        Write-Host 'The vulnerable-driver blocklist setting changed after installation; leaving the newer value untouched.'
+    }
+}
+
 if (Test-Path $regRoot) {
     foreach ($k in 'DspBoot', 'DspIpc', 'DspDiag', 'Codec', 'AmpLeft', 'AmpRight', 'Amp0', 'Amp1') {
         if (Test-Path "$regRoot\$k") { Remove-Item "$regRoot\$k" -Recurse -Force }
     }
-    Remove-ItemProperty -Path $regRoot -Name 'InstalledBusDriver' -ErrorAction SilentlyContinue
+    foreach ($name in 'InstalledBusDriver', 'BlocklistBackupCaptured', 'BlocklistValueWasPresent', 'PreviousVulnerableDriverBlocklistEnable') {
+        Remove-ItemProperty -Path $regRoot -Name $name -ErrorAction SilentlyContinue
+    }
 }
 Write-Host "`nDone. Reboot to finish. Windows goes back to any older audio driver it still has." -ForegroundColor Green

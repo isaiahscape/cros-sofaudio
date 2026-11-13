@@ -41,9 +41,24 @@ echo [INFO] Building Solution (Release ^| x64)...
 echo [INFO] Logging errors to: !ERROR_LOG!
 echo.
 
+set "TARGET_PLATFORM_ARG="
+if defined WINDOWS_TARGET_PLATFORM_VERSION (
+    set "TARGET_PLATFORM_ARG=/p:WindowsTargetPlatformVersion=!WINDOWS_TARGET_PLATFORM_VERSION!"
+    echo [INFO] Pinning Windows SDK/WDK target to !WINDOWS_TARGET_PLATFORM_VERSION!.
+)
+
 :: Clear previous logs
 if exist "!ERROR_LOG!" del /f /q "!ERROR_LOG!"
 if exist "!FULL_LOG!" del /f /q "!FULL_LOG!"
+
+:: Never allow an incremental build to reuse a catalog generated for older
+:: INF or binary contents. Inf2Cat regenerates each one during MSBuild.
+for %%c in (
+    "%ROOT_DIR%x64\Release\Max98373Audio\max98373audio.cat"
+    "%ROOT_DIR%x64\Release\Nau8825Audio\nau8825audio.cat"
+    "%ROOT_DIR%x64\Release\SklHdaudBus\sklhdaudbus.cat"
+    "%ROOT_DIR%x64\Release\CsAudioIntcsof\csaudiointcsof.cat"
+) do if exist "%%~c" del /f /q "%%~c"
 
 :: Ensure firmware files are present in driver package directory for Inf2Cat
 if not exist "%ROOT_DIR%x64\Release\CsAudioIntcsof" mkdir "%ROOT_DIR%x64\Release\CsAudioIntcsof"
@@ -52,7 +67,7 @@ copy /y "%ROOT_DIR%CsAudioIntcsof\sof-*.ri" "%ROOT_DIR%x64\Release\CsAudioIntcso
 :: Execute MSBuild with dedicated lightweight file loggers
 "!MSBUILD!" "%ROOT_DIR%ChromebookAudioDrivers.sln" ^
     /p:Configuration=Release ^
-    /p:Platform=x64 ^
+    /p:Platform=x64 !TARGET_PLATFORM_ARG! ^
     /m ^
     /v:normal ^
     /flp1:logfile="!ERROR_LOG!";errorsonly ^
@@ -61,25 +76,62 @@ copy /y "%ROOT_DIR%CsAudioIntcsof\sof-*.ri" "%ROOT_DIR%x64\Release\CsAudioIntcso
 set BUILD_EXIT=%ERRORLEVEL%
 
 if %BUILD_EXIT% equ 0 (
-    set SIGNTOOL="C:\Program Files (x86)\Windows Kits\10\bin\10.0.28000.0\x64\signtool.exe"
-    if exist !SIGNTOOL! (
-        echo [INFO] Signing driver packages with The Scape Network certificate...
-        !SIGNTOOL! sign /v /s My /sha1 38E2878D911EFA90E0A211EB80DC227B51166126 /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 ^
-            "%ROOT_DIR%x64\Release\Max98373Audio\Max98373Audio.sys" "%ROOT_DIR%x64\Release\Max98373Audio\max98373audio.cat" ^
-            "%ROOT_DIR%x64\Release\Nau8825Audio\Nau8825Audio.sys" "%ROOT_DIR%x64\Release\Nau8825Audio\nau8825audio.cat" ^
-            "%ROOT_DIR%x64\Release\SklHdaudBus\SklHdaudBus.sys" "%ROOT_DIR%x64\Release\SklHdaudBus\sklhdaudbus.cat" ^
-            "%ROOT_DIR%x64\Release\CsAudioIntcsof\CsAudioIntcsof.sys" "%ROOT_DIR%x64\Release\CsAudioIntcsof\csaudiointcsof.cat" ^
-            "%ROOT_DIR%x64\Release\CrosAudioTest.exe" ^
-            "%ROOT_DIR%x64\Release\csaudioendpointswitcher.exe" >nul 2>&1
-        if exist "%ROOT_DIR%TheScapeNetwork.cer" (
-            copy /y "%ROOT_DIR%TheScapeNetwork.cer" "%ROOT_DIR%x64\Release\Max98373Audio\TheScapeNetwork.cer" >nul
-            copy /y "%ROOT_DIR%TheScapeNetwork.cer" "%ROOT_DIR%x64\Release\Nau8825Audio\TheScapeNetwork.cer" >nul
-            copy /y "%ROOT_DIR%TheScapeNetwork.cer" "%ROOT_DIR%x64\Release\SklHdaudBus\TheScapeNetwork.cer" >nul
-            copy /y "%ROOT_DIR%TheScapeNetwork.cer" "%ROOT_DIR%x64\Release\CsAudioIntcsof\TheScapeNetwork.cer" >nul
-            copy /y "%ROOT_DIR%TheScapeNetwork.cer" "%ROOT_DIR%x64\Release\TheScapeNetwork.cer" >nul
-        )
-        echo [INFO] Driver packages signed successfully.
+    for %%c in (
+        "%ROOT_DIR%x64\Release\Max98373Audio\max98373audio.cat"
+        "%ROOT_DIR%x64\Release\Nau8825Audio\nau8825audio.cat"
+        "%ROOT_DIR%x64\Release\SklHdaudBus\sklhdaudbus.cat"
+        "%ROOT_DIR%x64\Release\CsAudioIntcsof\csaudiointcsof.cat"
+    ) do if not exist "%%~c" (
+        echo [ERROR] Inf2Cat did not generate %%~c.
+        exit /b 1
     )
+
+    set "SIGNTOOL="
+    for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\Find-SignTool.ps1"`) do set "SIGNTOOL=%%i"
+    if not defined SIGNTOOL (
+        echo [ERROR] signtool.exe was not found in the installed Windows Driver Kit.
+        exit /b 1
+    )
+
+    set "SIGN_CERT_STORE="
+    set "RESOLVED_SIGN_CERT_SHA1="
+    for /f "tokens=1,2 delims=|" %%a in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\Resolve-SigningCertificate.ps1" -CertificatePath "%ROOT_DIR%ChromebookAudio.cer" -OutputPath "%ROOT_DIR%x64\Release\ChromebookAudio.cer"') do (
+        set "SIGN_CERT_STORE=%%a"
+        set "RESOLVED_SIGN_CERT_SHA1=%%b"
+    )
+    if not defined RESOLVED_SIGN_CERT_SHA1 (
+        echo [ERROR] Could not resolve the driver signing certificate and private key.
+        exit /b 1
+    )
+
+    set "SIGN_STORE_ARGS=/s My"
+    if /i "!SIGN_CERT_STORE!"=="LocalMachine" set "SIGN_STORE_ARGS=/sm /s My"
+
+    echo [INFO] Signing driver packages with certificate !RESOLVED_SIGN_CERT_SHA1!...
+    "!SIGNTOOL!" sign /v !SIGN_STORE_ARGS! /sha1 !RESOLVED_SIGN_CERT_SHA1! /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 ^
+        "%ROOT_DIR%x64\Release\Max98373Audio\Max98373Audio.sys" "%ROOT_DIR%x64\Release\Max98373Audio\max98373audio.cat" ^
+        "%ROOT_DIR%x64\Release\Nau8825Audio\Nau8825Audio.sys" "%ROOT_DIR%x64\Release\Nau8825Audio\nau8825audio.cat" ^
+        "%ROOT_DIR%x64\Release\SklHdaudBus\SklHdaudBus.sys" "%ROOT_DIR%x64\Release\SklHdaudBus\sklhdaudbus.cat" ^
+        "%ROOT_DIR%x64\Release\CsAudioIntcsof\CsAudioIntcsof.sys" "%ROOT_DIR%x64\Release\CsAudioIntcsof\csaudiointcsof.cat" ^
+        "%ROOT_DIR%x64\Release\CrosAudioTest.exe" ^
+        "%ROOT_DIR%x64\Release\csaudioendpointswitcher.exe"
+    if !ERRORLEVEL! neq 0 (
+        echo [ERROR] Driver package signing failed.
+        exit /b 1
+    )
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\Test-DriverSignatures.ps1" ^
+        -CertificatePath "%ROOT_DIR%x64\Release\ChromebookAudio.cer" ^
+        -Paths "%ROOT_DIR%x64\Release\Max98373Audio\Max98373Audio.sys;%ROOT_DIR%x64\Release\Max98373Audio\max98373audio.cat;%ROOT_DIR%x64\Release\Nau8825Audio\Nau8825Audio.sys;%ROOT_DIR%x64\Release\Nau8825Audio\nau8825audio.cat;%ROOT_DIR%x64\Release\SklHdaudBus\SklHdaudBus.sys;%ROOT_DIR%x64\Release\SklHdaudBus\sklhdaudbus.cat;%ROOT_DIR%x64\Release\CsAudioIntcsof\CsAudioIntcsof.sys;%ROOT_DIR%x64\Release\CsAudioIntcsof\csaudiointcsof.cat;%ROOT_DIR%x64\Release\CrosAudioTest.exe;%ROOT_DIR%x64\Release\csaudioendpointswitcher.exe"
+    if !ERRORLEVEL! neq 0 (
+        echo [ERROR] One or more build outputs were signed by a different certificate.
+        exit /b 1
+    )
+
+    for %%d in (Max98373Audio Nau8825Audio SklHdaudBus CsAudioIntcsof) do (
+        copy /y "%ROOT_DIR%x64\Release\ChromebookAudio.cer" "%ROOT_DIR%x64\Release\%%d\ChromebookAudio.cer" >nul
+    )
+    echo [INFO] Driver packages signed and verified successfully.
 
     echo -------------------------------------------------------------------- > "!ERROR_LOG!"
     echo [BUILD STATUS] SUCCESS >> "!ERROR_LOG!"
