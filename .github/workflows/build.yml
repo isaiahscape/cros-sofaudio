@@ -36,6 +36,7 @@ jobs:
       package_version: ${{ steps.version.outputs.value }}
       package_sha256: ${{ steps.package.outputs.sha256 }}
       artifact_name: ${{ steps.package.outputs.artifact_name }}
+      source_sha: ${{ steps.version.outputs.source_sha }}
     env:
       WINDOWS_TARGET_PLATFORM_VERSION: 10.0.26100.0
       MSBUILDDISABLENODEREUSE: 1
@@ -79,8 +80,15 @@ jobs:
               throw "Package version '$version' does not match tag '$env:GITHUB_REF_NAME'."
           }
 
+          $sourceSha = (& git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $sourceSha -notmatch '^[0-9a-f]{40}$') {
+              throw "Could not resolve the checked-out source commit: $sourceSha"
+          }
+
           "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "source_sha=$sourceSha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Package version: $version"
+          Write-Host "Source commit: $sourceSha"
 
       - name: Verify Visual Studio and WDK requirements
         shell: pwsh
@@ -315,6 +323,7 @@ jobs:
       PACKAGE_VERSION: ${{ needs.build.outputs.package_version }}
       PACKAGE_SHA256: ${{ needs.build.outputs.package_sha256 }}
       ARTIFACT_NAME: ${{ needs.build.outputs.artifact_name }}
+      SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
 
     steps:
       - name: Download and verify signed package
@@ -365,8 +374,8 @@ jobs:
           if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
             tag_exists=true
             tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha)"
-            if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
-              echo "Tag $tag points to $tag_sha, but this verified build is $GITHUB_SHA." >&2
+            if [[ "$tag_sha" != "$SOURCE_SHA" ]]; then
+              echo "Tag $tag points to $tag_sha, but this verified build is $SOURCE_SHA." >&2
               exit 1
             fi
           elif [[ "$GITHUB_REF_TYPE" == 'tag' ]]; then
@@ -381,7 +390,7 @@ jobs:
           else
             notes_path="release-assets/release-notes.md"
             cat > "$notes_path" <<EOF
-          Verified Windows x64 driver package built from commit \`$GITHUB_SHA\`.
+          Verified Windows x64 driver package built from commit \`$SOURCE_SHA\`.
 
           **SHA-256:** \`$PACKAGE_SHA256\`
 
@@ -398,7 +407,7 @@ jobs:
             if [[ "$tag_exists" == true ]]; then
               create_args+=(--verify-tag)
             else
-              create_args+=(--target "$GITHUB_SHA")
+              create_args+=(--target "$SOURCE_SHA")
             fi
             gh release create "${create_args[@]}"
           fi
