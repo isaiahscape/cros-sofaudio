@@ -7,6 +7,13 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 
+if (-not (Get-PSProvider -PSProvider Certificate -ErrorAction SilentlyContinue)) {
+    throw 'The Windows PowerShell Certificate provider is unavailable.'
+}
+if (-not (Get-PSDrive -Name Cert -ErrorAction SilentlyContinue)) {
+    New-PSDrive -Name Cert -PSProvider Certificate -Root '\' -Scope Global | Out-Null
+}
+
 $certificate = New-SelfSignedCertificate `
     -Type CodeSigningCert `
     -Subject $Subject `

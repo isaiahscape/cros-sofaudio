@@ -11,6 +11,13 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 
+if (-not (Get-PSProvider -PSProvider Certificate -ErrorAction SilentlyContinue)) {
+    throw 'The Windows PowerShell Certificate provider is unavailable.'
+}
+if (-not (Get-PSDrive -Name Cert -ErrorAction SilentlyContinue)) {
+    New-PSDrive -Name Cert -PSProvider Certificate -Root '\' -Scope Global | Out-Null
+}
+
 function Normalize-Thumbprint([string]$Value) {
     if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
     return ($Value -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
