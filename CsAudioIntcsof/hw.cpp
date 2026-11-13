@@ -67,9 +67,6 @@ CCsAudioSofHW::CCsAudioSofHW(_In_ PRESOURCELIST ResourceList, _In_ PDEVICE_OBJEC
       m_iDevSpecific(0),
       m_uiDevSpecific(0),
       m_BusInterfaceValid(FALSE),
-      m_hCaptureStream(NULL),
-      m_captureStreamTag(0),
-      m_runningCaptureStreams(0),
       m_sampleRate(48000),
       m_channels(2),
       m_bitsPerSample(16),
@@ -182,11 +179,6 @@ NTSTATUS CCsAudioSofHW::sof_deinit()
         }
     }
 
-    if (m_hCaptureStream && m_BusInterface.FreeStream) {
-        m_BusInterface.FreeStream(m_BusInterface.Context, m_hCaptureStream);
-        m_hCaptureStream = NULL;
-    }
-
     // Stall, reset and power off the DSP core if we booted it.
     sof_dsp_power_down();
 
@@ -223,117 +215,58 @@ NTSTATUS CCsAudioSofHW::sof_program_dma(eDeviceType deviceType, PMDL mdl, IPortW
     int numBlocks = (int)(totalBytes / BDL_BLOCK_SIZE);
     if (numBlocks <= 0) numBlocks = 1;
 
-    if (deviceType == eSpeakerDevice || deviceType == eHeadphoneDevice) {
-        SOF_RENDER_PATH* rp = &m_path[sof_path_for(deviceType)];
-        rp->bufBytes = totalBytes;
-        if (!rp->hStream && m_BusInterface.GetRenderStream) {
-            NTSTATUS status = m_BusInterface.GetRenderStream(
-                m_BusInterface.Context,
-                streamFormat,
-                &rp->hStream,
-                &rp->tag
-            );
-            if (!NT_SUCCESS(status)) {
-                return status;
-            }
+    ULONG path = sof_path_for(deviceType);
+    if (path == SOF_PATH_NONE) return STATUS_INVALID_PARAMETER;
+
+    SOF_RENDER_PATH* rp = &m_path[path];
+    const BOOLEAN capture = (path == SOF_PATH_MICJACK || path == SOF_PATH_DMIC);
+    rp->bufBytes = totalBytes;
+
+    if (!rp->hStream) {
+        NTSTATUS status;
+        if (capture && m_BusInterface.GetCaptureStream) {
+            status = m_BusInterface.GetCaptureStream(
+                m_BusInterface.Context, streamFormat, &rp->hStream, &rp->tag);
+        } else if (!capture && m_BusInterface.GetRenderStream) {
+            status = m_BusInterface.GetRenderStream(
+                m_BusInterface.Context, streamFormat, &rp->hStream, &rp->tag);
+        } else {
+            return STATUS_NOT_SUPPORTED;
         }
+        if (!NT_SUCCESS(status)) return status;
+    }
 
-        if (rp->hStream && m_BusInterface.PrepareDSP) {
-            PVOID bdlBuf = NULL;
-            NTSTATUS status = m_BusInterface.PrepareDSP(
-                m_BusInterface.Context,
-                rp->hStream,
-                totalBytes,
-                numBlocks,
-                &bdlBuf
-            );
-            if (!NT_SUCCESS(status)) {
-                return status;
-            }
+    if (!rp->hStream || !m_BusInterface.PrepareDSP) return STATUS_INVALID_DEVICE_STATE;
 
-            if (bdlBuf && mdl) {
-                PHDAC_BDLENTRY bdl = (PHDAC_BDLENTRY)bdlBuf;
-                PPFN_NUMBER pfnArray = MmGetMdlPfnArray(mdl);
-                ULONG remaining = totalBytes;
-                ULONG offset = 0;
-                ULONG pageIndex = 0;
+    PVOID bdlBuf = NULL;
+    NTSTATUS status = m_BusInterface.PrepareDSP(
+        m_BusInterface.Context, rp->hStream, totalBytes, numBlocks, &bdlBuf);
+    if (!NT_SUCCESS(status)) return status;
 
-                for (int i = 0; i < numBlocks && remaining > 0; i++) {
-                    ULONG pageOff = offset % PAGE_SIZE;
-                    ULONG chunk = (pageOff == 0) ? PAGE_SIZE : (PAGE_SIZE - pageOff);
-                    if (chunk > remaining) chunk = remaining;
-                    if (chunk > BDL_BLOCK_SIZE) chunk = BDL_BLOCK_SIZE;
+    if (bdlBuf && mdl) {
+        PHDAC_BDLENTRY bdl = (PHDAC_BDLENTRY)bdlBuf;
+        PPFN_NUMBER pfnArray = MmGetMdlPfnArray(mdl);
+        ULONG remaining = totalBytes;
+        ULONG offset = 0;
+        ULONG pageIndex = 0;
 
-                    PFN_NUMBER pfn = pfnArray[pageIndex];
-                    PHYSICAL_ADDRESS addr;
-                    addr.QuadPart = (LONGLONG)pfn << PAGE_SHIFT;
+        for (int i = 0; i < numBlocks && remaining > 0; i++) {
+            ULONG pageOff = offset % PAGE_SIZE;
+            ULONG chunk = (pageOff == 0) ? PAGE_SIZE : (PAGE_SIZE - pageOff);
+            if (chunk > remaining) chunk = remaining;
+            if (chunk > BDL_BLOCK_SIZE) chunk = BDL_BLOCK_SIZE;
 
-                    bdl[i].lowAddr = addr.LowPart + pageOff;
-                    bdl[i].highAddr = addr.HighPart;
-                    bdl[i].len = chunk;
-                    remaining -= chunk;
-                    offset += chunk;
-                    if ((offset % PAGE_SIZE) == 0) pageIndex++;
+            PFN_NUMBER pfn = pfnArray[pageIndex];
+            PHYSICAL_ADDRESS addr;
+            addr.QuadPart = (LONGLONG)pfn << PAGE_SHIFT;
 
-                    bdl[i].ioc = (remaining == 0 || remaining == totalBytes / 2) ? 1 : 0;
-                }
-            }
-            return STATUS_SUCCESS;
-        }
-    } else if (deviceType == eMicArrayDevice1 || deviceType == eMicJackDevice) {
-        if (!m_hCaptureStream && m_BusInterface.GetCaptureStream) {
-            NTSTATUS status = m_BusInterface.GetCaptureStream(
-                m_BusInterface.Context,
-                streamFormat,
-                &m_hCaptureStream,
-                &m_captureStreamTag
-            );
-            if (!NT_SUCCESS(status)) {
-                return status;
-            }
-        }
-
-        if (m_hCaptureStream && m_BusInterface.PrepareDSP) {
-            PVOID bdlBuf = NULL;
-            NTSTATUS status = m_BusInterface.PrepareDSP(
-                m_BusInterface.Context,
-                m_hCaptureStream,
-                totalBytes,
-                numBlocks,
-                &bdlBuf
-            );
-            if (!NT_SUCCESS(status)) {
-                return status;
-            }
-
-            if (bdlBuf && mdl) {
-                PHDAC_BDLENTRY bdl = (PHDAC_BDLENTRY)bdlBuf;
-                PPFN_NUMBER pfnArray = MmGetMdlPfnArray(mdl);
-                ULONG remaining = totalBytes;
-                ULONG offset = 0;
-                ULONG pageIndex = 0;
-
-                for (int i = 0; i < numBlocks && remaining > 0; i++) {
-                    ULONG pageOff = offset % PAGE_SIZE;
-                    ULONG chunk = (pageOff == 0) ? PAGE_SIZE : (PAGE_SIZE - pageOff);
-                    if (chunk > remaining) chunk = remaining;
-                    if (chunk > BDL_BLOCK_SIZE) chunk = BDL_BLOCK_SIZE;
-
-                    PFN_NUMBER pfn = pfnArray[pageIndex];
-                    PHYSICAL_ADDRESS addr;
-                    addr.QuadPart = (LONGLONG)pfn << PAGE_SHIFT;
-
-                    bdl[i].lowAddr = addr.LowPart + pageOff;
-                    bdl[i].highAddr = addr.HighPart;
-                    bdl[i].len = chunk;
-                    remaining -= chunk;
-                    offset += chunk;
-                    if ((offset % PAGE_SIZE) == 0) pageIndex++;
-
-                    bdl[i].ioc = (remaining == 0 || remaining == totalBytes / 2) ? 1 : 0;
-                }
-            }
-            return STATUS_SUCCESS;
+            bdl[i].lowAddr = addr.LowPart + pageOff;
+            bdl[i].highAddr = addr.HighPart;
+            bdl[i].len = chunk;
+            remaining -= chunk;
+            offset += chunk;
+            if ((offset % PAGE_SIZE) == 0) pageIndex++;
+            bdl[i].ioc = (remaining == 0 || remaining == totalBytes / 2) ? 1 : 0;
         }
     }
 
@@ -349,6 +282,8 @@ NTSTATUS CCsAudioSofHW::sof_program_dma(eDeviceType deviceType, PMDL mdl, IPortW
 ULONG CCsAudioSofHW::sof_path_for(_In_ eDeviceType deviceType)
 {
     if (deviceType == eHeadphoneDevice) return SOF_PATH_HP;
+    if (deviceType == eMicJackDevice) return SOF_PATH_MICJACK;
+    if (deviceType == eMicArrayDevice1) return SOF_PATH_DMIC;
     if (deviceType == eSpeakerDevice) {
         if (m_path[SOF_PATH_SPK].pipelineReady || !m_path[SOF_PATH_HP].pipelineReady)
             return SOF_PATH_SPK;
@@ -360,7 +295,13 @@ ULONG CCsAudioSofHW::sof_path_for(_In_ eDeviceType deviceType)
 /* Sidecar codec that sits behind a render path. */
 static CSAudioEndpointType PathEndpoint(ULONG path)
 {
-    return (path == SOF_PATH_SPK) ? CSAudioEndpointTypeSpeaker : CSAudioEndpointTypeHeadphone;
+    switch (path) {
+    case SOF_PATH_SPK:     return CSAudioEndpointTypeSpeaker;
+    case SOF_PATH_HP:      return CSAudioEndpointTypeHeadphone;
+    case SOF_PATH_MICJACK: return CSAudioEndpointTypeMicJack;
+    case SOF_PATH_DMIC:    return CSAudioEndpointTypeMicArray;
+    default:               return CSAudioEndpointTypeDSP;
+    }
 }
 
 void CCsAudioSofHW::NotifyCodecs(_In_ CSAudioEndpointType endpointType, _In_ BOOLEAN start)
@@ -386,33 +327,36 @@ NTSTATUS CCsAudioSofHW::sof_play(eDeviceType deviceType, UINT32 byteCount)
 {
     UNREFERENCED_PARAMETER(byteCount);
 
-    if (deviceType == eSpeakerDevice || deviceType == eHeadphoneDevice) {
-        ULONG path = sof_path_for(deviceType);
-        SOF_RENDER_PATH* rp = &m_path[path];
-        BOOLEAN first = (rp->running == 0);
+    ULONG path = sof_path_for(deviceType);
+    if (path == SOF_PATH_NONE) return STATUS_INVALID_PARAMETER;
 
-        // Linux order: BE hw_params + PCM_PARAMS, host DMA start, then the
-        // DSP trigger (SSP clocks start), then the codec/amp power-up.
-        if (first && rp->pipelineReady) {
-            (void)sof_stream_prepare(path);
-        }
-        if (rp->hStream && m_BusInterface.TriggerDSP) {
-            m_BusInterface.TriggerDSP(m_BusInterface.Context, rp->hStream, TRUE);
-        }
-        if (first && rp->paramsSet) {
-            (void)sof_stream_trigger_start(path);
-        }
-        InterlockedIncrement16(&rp->running);
+    SOF_RENDER_PATH* rp = &m_path[path];
+    BOOLEAN first = (rp->running == 0);
 
-        if (first) {
-            NotifyCodecs(PathEndpoint(path), TRUE);
+    if (first && !rp->pipelineReady) return STATUS_DEVICE_NOT_READY;
+
+    // Linux order: BE hw_params + PCM_PARAMS, host DMA start, DSP trigger,
+    // then power the physical sidecar once its clocks are running.
+    if (first && rp->pipelineReady) {
+        NTSTATUS status = sof_stream_prepare(path);
+        if (!NT_SUCCESS(status)) return status;
+    }
+    if (rp->hStream && m_BusInterface.TriggerDSP) {
+        m_BusInterface.TriggerDSP(m_BusInterface.Context, rp->hStream, TRUE);
+    }
+    if (first && rp->paramsSet) {
+        NTSTATUS status = sof_stream_trigger_start(path);
+        if (!NT_SUCCESS(status)) {
+            if (rp->hStream && m_BusInterface.TriggerDSP)
+                m_BusInterface.TriggerDSP(m_BusInterface.Context, rp->hStream, FALSE);
+            (void)sof_stream_free(path);
+            return status;
         }
-    } else {
-        if (m_hCaptureStream && m_BusInterface.TriggerDSP) {
-            m_BusInterface.TriggerDSP(m_BusInterface.Context, m_hCaptureStream, TRUE);
-        }
-        InterlockedIncrement16(&m_runningCaptureStreams);
-        NotifyCodecs(GetCSAudioEndpoint(deviceType), TRUE);
+    }
+    InterlockedIncrement16(&rp->running);
+
+    if (first && path != SOF_PATH_DMIC) {
+        NotifyCodecs(PathEndpoint(path), TRUE);
     }
 
     return STATUS_SUCCESS;
@@ -420,61 +364,50 @@ NTSTATUS CCsAudioSofHW::sof_play(eDeviceType deviceType, UINT32 byteCount)
 
 NTSTATUS CCsAudioSofHW::sof_stop(eDeviceType deviceType)
 {
-    if (deviceType == eSpeakerDevice || deviceType == eHeadphoneDevice) {
-        ULONG path = sof_path_for(deviceType);
-        SOF_RENDER_PATH* rp = &m_path[path];
-        if (rp->running <= 0) {
-            return STATUS_SUCCESS;
-        }
-        InterlockedDecrement16(&rp->running);
-        BOOLEAN last = (rp->running == 0);
+    ULONG path = sof_path_for(deviceType);
+    if (path == SOF_PATH_NONE) return STATUS_INVALID_PARAMETER;
 
-        if (last && path == SOF_PATH_SPK) {
-            // Amps off while BCLK still runs (no pop, no clock-loss fault),
-            // then snapshot the SSP1 / DMA state for the log.
-            NotifyCodecs(CSAudioEndpointTypeSpeaker, FALSE);
-            sof_diag_snapshot(path, L"SpkStop");
-        }
-        if (last && path == SOF_PATH_HP) {
-            sof_diag_snapshot(path, L"HpStop");
-        }
-        if (last) {
-            (void)sof_stream_trigger_stop(path);    // before host DMA stop (Linux order)
-        }
-        if (rp->hStream && m_BusInterface.TriggerDSP) {
-            m_BusInterface.TriggerDSP(m_BusInterface.Context, rp->hStream, FALSE);
-        }
-        if (last && path == SOF_PATH_HP) {
-            // NAU88L25: DAPM power-down after the stream stops (Linux order).
-            NotifyCodecs(CSAudioEndpointTypeHeadphone, FALSE);
-        }
-        // PCM_FREE + DAI hw_free (stops the SSP clocks) only after the
-        // codec/amps have powered down.
-        if (last) {
-            (void)sof_stream_free(path);
-        }
-    } else {
-        if (m_runningCaptureStreams <= 0) {
-            return STATUS_SUCCESS;
-        }
-        InterlockedDecrement16(&m_runningCaptureStreams);
-        if (m_hCaptureStream && m_BusInterface.TriggerDSP) {
-            m_BusInterface.TriggerDSP(m_BusInterface.Context, m_hCaptureStream, FALSE);
-        }
-        NotifyCodecs(GetCSAudioEndpoint(deviceType), FALSE);
+    SOF_RENDER_PATH* rp = &m_path[path];
+    if (rp->running <= 0) return STATUS_SUCCESS;
+
+    InterlockedDecrement16(&rp->running);
+    BOOLEAN last = (rp->running == 0);
+    if (!last) return STATUS_SUCCESS;
+
+    if (path == SOF_PATH_SPK) {
+        // Amps off while BCLK still runs (no pop / clock-loss fault).
+        NotifyCodecs(CSAudioEndpointTypeSpeaker, FALSE);
+        sof_diag_snapshot(path, L"SpkStop");
+    } else if (path == SOF_PATH_HP) {
+        sof_diag_snapshot(path, L"HpStop");
+    } else if (path == SOF_PATH_MICJACK) {
+        // Stop the ADC while SSP0 clocks are still present.
+        NotifyCodecs(CSAudioEndpointTypeMicJack, FALSE);
+        sof_diag_snapshot(path, L"MicJackStop");
+    } else if (path == SOF_PATH_DMIC) {
+        sof_diag_snapshot(path, L"DmicStop");
     }
+
+    (void)sof_stream_trigger_stop(path);
+    if (rp->hStream && m_BusInterface.TriggerDSP) {
+        m_BusInterface.TriggerDSP(m_BusInterface.Context, rp->hStream, FALSE);
+    }
+
+    if (path == SOF_PATH_HP) {
+        // NAU88L25 playback DAPM power-down after host DMA stops.
+        NotifyCodecs(CSAudioEndpointTypeHeadphone, FALSE);
+    }
+
+    // Free the PCM and DAI only after the physical codec has powered down.
+    (void)sof_stream_free(path);
 
     return STATUS_SUCCESS;
 }
 
 NTSTATUS CCsAudioSofHW::sof_current_position(eDeviceType deviceType, UINT32* linkPos, UINT64* linearPos)
 {
-    HANDLE h = NULL;
-    if (deviceType == eSpeakerDevice || deviceType == eHeadphoneDevice) {
-        h = m_path[sof_path_for(deviceType)].hStream;
-    } else {
-        h = m_hCaptureStream;
-    }
+    ULONG path = sof_path_for(deviceType);
+    HANDLE h = (path == SOF_PATH_NONE) ? NULL : m_path[path].hStream;
     if (h && m_BusInterface.StreamPosition) {
         UINT32 pos = m_BusInterface.StreamPosition(m_BusInterface.Context, h);
         if (linkPos) *linkPos = pos;

@@ -162,14 +162,20 @@
 
 /* SAR_CTRL (0x13) */
 #define NAU8825_SAR_ADC_EN                  (1 << 12)
-#define NAU8825_SAR_COMPARE_TIME_MASK       (7 << 8)
-#define NAU8825_SAR_SAMPLING_TIME_MASK      (7 << 4)
-#define NAU8825_SAR_TRACKING_GAIN_MASK      (7 << 0)
+#define NAU8825_SAR_INPUT_MASK              (1 << 11)
+#define NAU8825_SAR_TRACKING_GAIN_MASK      (7 << 8)
+#define NAU8825_SAR_HV_SEL_MASK             (1 << 7)
+#define NAU8825_SAR_RES_SEL_MASK            (7 << 4)
+#define NAU8825_SAR_COMPARE_TIME_MASK       (3 << 2)
+#define NAU8825_SAR_SAMPLING_TIME_MASK      (3 << 0)
 
-/* SARDOUT_RAM_STATUS (0x59) - Impedance / Headset Detection */
+/* SARDOUT_RAM_STATUS (0x59) - button/impedance ADC result */
 #define NAU8825_MICBIAS_FLT                 (1 << 15)
-#define NAU8825_MIC_DETECTED_STATUS         (1 << 14)
 #define NAU8825_SAR_DATA_MASK               (0xFF << 0)
+
+/* GENERAL_STATUS (0x82) - automatic Mic/GND detector result */
+#define NAU8825_MIC_DETECT_SHIFT            10
+#define NAU8825_MIC_DETECT_MASK             (3 << NAU8825_MIC_DETECT_SHIFT)
 
 /* HSVOL_CTRL (0x32) */
 #define NAU8825_HPR_MUTE                    (1 << 14)

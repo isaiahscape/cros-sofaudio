@@ -57,6 +57,7 @@ On modern Chromebooks running coreboot / UEFI firmware (such as MrChromebox UEFI
   * Intel Sound Open Firmware (SOF) PortCls WaveRT Miniport Driver.
   * Connects to `SklHdaudBus` via `GUID_ADSP_BUS_INTERFACE` to stream raw audio samples.
   * Registers 4 WaveRT endpoints: Speakers (MAX98373), Headphones (NAU88L25), Internal Digital Mic Array, and Headset Mic Jack (NAU88L25).
+  * Creates independent SOF capture pipelines for the internal two-channel PDM array (`DMIC0`) and the headset microphone (`SSP0.IN`).
   * Coordinates real-time hardware stream states with codec sidecars over `\CallBack\CsAudioCallbackAPI` and `GUID_DEVINTERFACE_CSAUDIO_CODEC`.
 * **Max98373Audio.sys**:
   * ACPI Hardware IDs: `ACPI\MX98373`, `ACPI\MAX98373`
@@ -69,7 +70,7 @@ On modern Chromebooks running coreboot / UEFI firmware (such as MrChromebox UEFI
   * 16-bit register, 16-bit data I2C engine.
   * FLL clock synthesis for 48kHz audio playback and capture.
   * Hardware Jack Detection via ACPI GPIO Interrupt (`DIRQL` ISR + `PASSIVE_LEVEL` WorkItem).
-  * Auto-differentiation between **3-pole (TRS) stereo headphones** and **4-pole (TRRS) headset with microphone** (CTIA / OMTP detection via SAR ADC).
+  * Auto-differentiation between **3-pole (TRS) stereo headphones** and **4-pole (TRRS) headsets**, including CTIA/OMTP Mic/GND routing from the hardware detector.
   * Real-time Windows Audio endpoint switching notification.
 
 ---

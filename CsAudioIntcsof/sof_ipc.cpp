@@ -35,6 +35,7 @@ typedef struct _SOF_IPC_BLOB {
 
 #include "sof_hp_pipeline.h"
 #include "sof_spk_pipeline.h"
+#include "sof_capture_pipelines.h"
 
 #define SOF_REG_IPC_LOG     L"\\Registry\\Machine\\SOFTWARE\\CrosSofAudio\\DspIpc"
 #define SOF_IPC_MAX_SIZE    384
@@ -200,15 +201,17 @@ out:
 }
 
 /* ----------------------------------------------------------------------
- * Render paths
+ * Render and capture paths
  * ---------------------------------------------------------------------- */
 typedef struct _SOF_PATH_DESC {
     PCWSTR              prefix;          /* registry key prefix */
     PCWSTR              attenName;       /* HKLM\SOFTWARE\CrosSofAudio\<attenName> (dB) */
     ULONG               attenDefault;
     ULONG               volMsgIndex;
-    PCSTR               sspName;
-    ULONG               sspIndex;
+    PCSTR               daiName;
+    ULONG               daiIndex;
+    BOOLEAN             capture;
+    BOOLEAN             isSsp;
     PCWSTR              okText;
     const SOF_IPC_BLOB* setup;
     ULONG               setupCount;
@@ -224,18 +227,30 @@ typedef struct _SOF_PATH_DESC {
 
 static const SOF_PATH_DESC c_PathDesc[SOF_PATH_COUNT] = {
     /* SOF_PATH_SPK */
-    { L"Spk", L"SpeakerDspAttenDb", 2, SOF_SPK_VOL_MSG_INDEX, "SSP1", 1, L"SUCCESS: speaker pipeline 1 (PCM0P -> volume -> SSP1) created",
+    { L"Spk", L"SpeakerDspAttenDb", 2, SOF_SPK_VOL_MSG_INDEX, "SSP1", 1, FALSE, TRUE, L"SUCCESS: speaker pipeline 1 (PCM0P -> volume -> SSP1) created",
       c_SofSpkSetup, ARRAYSIZE(c_SofSpkSetup),
       BLOB(c_SofSpkDaiHwParams), BLOB(c_SofSpkDaiHwFree), BLOB(c_SofSpkPcmParams),
       BLOB(c_SofSpkTrigStart), BLOB(c_SofSpkTrigStop), BLOB(c_SofSpkPcmFree) },
     /* SOF_PATH_HP */
-    { L"Hp", L"HeadphoneDspAttenDb", 20, SOF_HP_VOL_MSG_INDEX, "SSP0", 0, L"SUCCESS: headset pipeline 2 (PCM1P -> volume -> SSP0) created",
+    { L"Hp", L"HeadphoneDspAttenDb", 20, SOF_HP_VOL_MSG_INDEX, "SSP0", 0, FALSE, TRUE, L"SUCCESS: headset pipeline 2 (PCM1P -> volume -> SSP0) created",
       c_SofHpSetup, ARRAYSIZE(c_SofHpSetup),
       BLOB(c_SofHpDaiHwParams), BLOB(c_SofHpDaiHwFree), BLOB(c_SofHpPcmParams),
       BLOB(c_SofHpTrigStart), BLOB(c_SofHpTrigStop), BLOB(c_SofHpPcmFree) },
+    /* SOF_PATH_MICJACK */
+    { L"MicJack", L"HeadsetMicDspAttenDb", 0, SOF_MICJACK_VOL_MSG_INDEX, "SSP0", 0, TRUE, TRUE, L"SUCCESS: headset microphone pipeline 3 (SSP0 -> volume -> PCM1C) created",
+      c_SofMICJACKSetup, ARRAYSIZE(c_SofMICJACKSetup),
+      BLOB(c_SofMICJACKDaiHwParams), BLOB(c_SofMICJACKDaiHwFree), BLOB(c_SofMICJACKPcmParams),
+      BLOB(c_SofMICJACKTrigStart), BLOB(c_SofMICJACKTrigStop), BLOB(c_SofMICJACKPcmFree) },
+    /* SOF_PATH_DMIC */
+    { L"Dmic", L"MicArrayDspAttenDb", 0, SOF_DMIC_VOL_MSG_INDEX, "DMIC0", 0, TRUE, FALSE, L"SUCCESS: internal microphone pipeline 4 (DMIC0 -> volume -> PCM99C) created",
+      c_SofDMICSetup, ARRAYSIZE(c_SofDMICSetup),
+      BLOB(c_SofDMICDaiHwParams), BLOB(c_SofDMICDaiHwFree), BLOB(c_SofDMICPcmParams),
+      BLOB(c_SofDMICTrigStart), BLOB(c_SofDMICTrigStop), BLOB(c_SofDMICPcmFree) },
 };
 
 C_ASSERT(sizeof(c_SofSpkPcmParams) == sizeof(c_SofHpPcmParams));
+C_ASSERT(sizeof(c_SofSpkPcmParams) == sizeof(c_SofMICJACKPcmParams));
+C_ASSERT(sizeof(c_SofSpkPcmParams) == sizeof(c_SofDMICPcmParams));
 
 static void PathLogDword(ULONG path, PCWSTR name, ULONG v)
 {
@@ -291,8 +306,8 @@ void CCsAudioSofHW::sof_reset_pipeline_state()
     }
 }
 
-/* Called right after FW_READY: headset pipeline first (known good), then
- * the speaker pipeline. Each one is independent. */
+/* Called right after FW_READY. Every physical path has an independent
+ * pipeline so one failed endpoint does not prevent the others from working. */
 NTSTATUS CCsAudioSofHW::sof_setup_pipelines()
 {
     RtlCreateRegistryKey(RTL_REGISTRY_ABSOLUTE, L"\\Registry\\Machine\\SOFTWARE\\CrosSofAudio");
@@ -317,11 +332,16 @@ NTSTATUS CCsAudioSofHW::sof_setup_pipelines()
 
     NTSTATUS hp = sof_setup_pipeline(SOF_PATH_HP);
     NTSTATUS spk = sof_setup_pipeline(SOF_PATH_SPK);
+    NTSTATUS micJack = sof_setup_pipeline(SOF_PATH_MICJACK);
+    NTSTATUS dmic = sof_setup_pipeline(SOF_PATH_DMIC);
 
     IpcLogDword(L"IpcCount", m_ipcCount);
     IpcLogDword(L"NotifyCount", m_notifyCount);
     IpcLogDword(L"LastNotifyCmd", m_lastNotifyCmd);
-    return NT_SUCCESS(hp) ? spk : hp;
+    if (!NT_SUCCESS(hp)) return hp;
+    if (!NT_SUCCESS(spk)) return spk;
+    if (!NT_SUCCESS(micJack)) return micJack;
+    return dmic;
 }
 
 NTSTATUS CCsAudioSofHW::sof_setup_pipeline(_In_ ULONG path)
@@ -384,7 +404,7 @@ NTSTATUS CCsAudioSofHW::sof_stream_prepare(_In_ ULONG path)
     PathLogDword(path, L"StreamBufferBytes", rp->bufBytes);
 
     status = sof_ipc_tx(d->daiHwParams, d->daiHwParamsSize, NULL, 0, &fwErr);
-    RtlStringCchPrintfA(what, sizeof(what), "DAI_CONFIG %s HW_PARAMS", d->sspName);
+    RtlStringCchPrintfA(what, sizeof(what), "DAI_CONFIG %s HW_PARAMS", d->daiName);
     PathLogStep(path, L"StreamDaiHwParams", what, fwErr, status);
     if (!NT_SUCCESS(status)) return status;
 
@@ -442,9 +462,19 @@ NTSTATUS CCsAudioSofHW::sof_stream_free(_In_ ULONG path)
     status = sof_ipc_tx(d->pcmFree, d->pcmFreeSize, NULL, 0, &fwErr);
     PathLogStep(path, L"StreamPcmFree", "STREAM_PCM_FREE", fwErr, status);
 
-    NTSTATUS s2 = sof_ipc_tx(d->daiHwFree, d->daiHwFreeSize, NULL, 0, &fwErr);
-    RtlStringCchPrintfA(what, sizeof(what), "DAI_CONFIG %s HW_FREE", d->sspName);
-    PathLogStep(path, L"StreamDaiHwFree", what, fwErr, s2);
+    /* SSP0 is full duplex. Do not free its clocks while the opposite
+     * headphone direction is still running. The final direction to stop will
+     * issue HW_FREE for the shared DAI. */
+    BOOLEAN sharedSspActive =
+        (path == SOF_PATH_HP && m_path[SOF_PATH_MICJACK].running > 0) ||
+        (path == SOF_PATH_MICJACK && m_path[SOF_PATH_HP].running > 0);
+    if (!sharedSspActive) {
+        NTSTATUS s2 = sof_ipc_tx(d->daiHwFree, d->daiHwFreeSize, NULL, 0, &fwErr);
+        RtlStringCchPrintfA(what, sizeof(what), "DAI_CONFIG %s HW_FREE", d->daiName);
+        PathLogStep(path, L"StreamDaiHwFree", what, fwErr, s2);
+    } else {
+        PathLogDword(path, L"SharedDaiHeld", 1);
+    }
 
     rp->paramsSet = FALSE;
     IpcLogDword(L"IpcCount", m_ipcCount);
@@ -455,8 +485,8 @@ NTSTATUS CCsAudioSofHW::sof_stream_free(_In_ ULONG path)
 }
 
 /* ----------------------------------------------------------------------
- * Data-flow snapshot of one render path (taken just before it stops):
- *   - HDA host output stream: SD_CTL/STS and LPIB sampled 20 ms apart
+ * Data-flow snapshot of one path (taken just before it stops):
+ *   - HDA host input/output stream: SD_CTL/STS and LPIB sampled 20 ms apart
  *   - DSP firmware status word, pending DSP->host message
  *   - the path's SSP port: SSCR0.SSE = enabled, SSSR = FIFO level/underrun
  * Logged to HKLM\SOFTWARE\CrosSofAudio\DspDiag as <prefix>_<name>.
@@ -483,10 +513,12 @@ void CCsAudioSofHW::sof_diag_snapshot(_In_ ULONG path, _In_ PCWSTR prefix)
         USHORT gcap = READ_REGISTER_USHORT((volatile USHORT*)(hda + 0x00));
         ULONG iss = (gcap >> 8) & 0xF;
         ULONG oss = (gcap >> 12) & 0xF;
-        if (tag >= 1 && tag <= oss) {
-            sd = 0x80 + 0x20 * (iss + tag - 1);
-            if (sd + 0x20 > m_hdaBar.Len) sd = 0;
+        if (c_PathDesc[path].capture) {
+            if (tag >= 1 && tag <= iss) sd = 0x80 + 0x20 * (tag - 1);
+        } else {
+            if (tag >= 1 && tag <= oss) sd = 0x80 + 0x20 * (iss + tag - 1);
         }
+        if (sd + 0x20 > m_hdaBar.Len) sd = 0;
         DiagLog(prefix, L"StreamTag", tag);
         if (sd) {
             DiagLog(prefix, L"SD_CTLSTS", IpcRd(hda, sd + 0x00));   /* CTL[23:0], STS[31:24] */
@@ -494,17 +526,19 @@ void CCsAudioSofHW::sof_diag_snapshot(_In_ ULONG path, _In_ PCWSTR prefix)
         }
     }
 
-    const ULONG ssp = SOF_CNL_SSP_BASE_OFFSET + c_PathDesc[path].sspIndex * SOF_SSP_DEV_MEM_SIZE;
+    const ULONG ssp = SOF_CNL_SSP_BASE_OFFSET + c_PathDesc[path].daiIndex * SOF_SSP_DEV_MEM_SIZE;
     BOOLEAN dspOk = (dsp && m_adspBar.Len >= SOF_SRAM_WINDOW_OFFSET(1));
     if (dspOk) {
         DiagLog(prefix, L"FwStatus",  IpcRd(dsp, SOF_SRAM_WINDOW_OFFSET(0) + 0x0));
         DiagLog(prefix, L"HIPCTDR",   IpcRd(dsp, SOF_CNL_HIPCTDR));
-        DiagLog(prefix, L"SSCR0", IpcRd(dsp, ssp + 0x00));
-        DiagLog(prefix, L"SSCR1", IpcRd(dsp, ssp + 0x04));
-        DiagLog(prefix, L"SSSR_A", IpcRd(dsp, ssp + 0x08));
-        DiagLog(prefix, L"SSPSP", IpcRd(dsp, ssp + 0x2C));
-        DiagLog(prefix, L"SSTSA", IpcRd(dsp, ssp + 0x30));
-        DiagLog(prefix, L"SSRSA", IpcRd(dsp, ssp + 0x34));
+        if (c_PathDesc[path].isSsp) {
+            DiagLog(prefix, L"SSCR0", IpcRd(dsp, ssp + 0x00));
+            DiagLog(prefix, L"SSCR1", IpcRd(dsp, ssp + 0x04));
+            DiagLog(prefix, L"SSSR_A", IpcRd(dsp, ssp + 0x08));
+            DiagLog(prefix, L"SSPSP", IpcRd(dsp, ssp + 0x2C));
+            DiagLog(prefix, L"SSTSA", IpcRd(dsp, ssp + 0x30));
+            DiagLog(prefix, L"SSRSA", IpcRd(dsp, ssp + 0x34));
+        }
     }
 
     LARGE_INTEGER d; d.QuadPart = -200000;  /* 20 ms */
@@ -513,7 +547,8 @@ void CCsAudioSofHW::sof_diag_snapshot(_In_ ULONG path, _In_ PCWSTR prefix)
         DiagLog(prefix, L"SD_LPIB_B", IpcRd(hda, sd + 0x04));
     }
     if (dspOk) {
-        DiagLog(prefix, L"SSSR_B", IpcRd(dsp, ssp + 0x08));
+        if (c_PathDesc[path].isSsp)
+            DiagLog(prefix, L"SSSR_B", IpcRd(dsp, ssp + 0x08));
         if (IpcRd(dsp, SOF_CNL_HIPCTDR) & SOF_CNL_HIPCTDR_BUSY) {
             UINT32 hdr[2] = { 0, 0 };
             READ_REGISTER_BUFFER_ULONG((volatile ULONG*)(dsp + m_mboxUpOffset), (PULONG)hdr, 2);

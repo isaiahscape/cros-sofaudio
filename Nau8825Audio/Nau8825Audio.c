@@ -391,6 +391,10 @@ Nau8825_EvtD0Entry(
         return STATUS_SUCCESS;
     }
 
+    /* Keep the GPIO interpretation and the codec's automatic detector on the
+     * same polarity. Volmar's Windows firmware exposes high = inserted. */
+    devCtx->JackActiveLow = NauReadConfigDword(L"JackActiveLow", 0) ? TRUE : FALSE;
+
     status = Nau8825_InitializeHardware(devCtx);
     if (!NT_SUCCESS(status)) {
         KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
@@ -400,7 +404,6 @@ Nau8825_EvtD0Entry(
 
     /* Jack detection: polled (the old interrupt set-up used guessed register
      * bits and is no longer enabled). First reading is applied immediately. */
-    devCtx->JackActiveLow = NauReadConfigDword(L"JackActiveLow", 0) ? TRUE : FALSE;
     devCtx->JackKnown = FALSE;
     devCtx->JackCandidate = 0xFF;
     Nau8825_ProcessJackStateChange(devCtx);
@@ -500,6 +503,8 @@ static VOID NauSnapshot(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
     NauLogReg(DevCtx, L"R09_FLL6",          NAUL_FLL6);
     NauLogReg(DevCtx, L"R0C_HSD_CTRL",      NAUL_HSD_CTRL);
     NauLogReg(DevCtx, L"R0D_JACK_DET_CTRL", NAUL_JACK_DET_CTRL);
+    NauLogReg(DevCtx, L"R10_IRQ_STATUS",     NAUL_IRQ_STATUS);
+    NauLogReg(DevCtx, L"R13_SAR_CTRL",       NAUL_SAR_CTRL);
     NauLogReg(DevCtx, L"R1C_I2S_CTRL1",     NAUL_I2S_PCM_CTRL1);
     NauLogReg(DevCtx, L"R1D_I2S_CTRL2",     NAUL_I2S_PCM_CTRL2);
     NauLogReg(DevCtx, L"R2C_DAC_CTRL1",     NAUL_DAC_CTRL1);
@@ -509,11 +514,15 @@ static VOID NauSnapshot(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
     NauLogReg(DevCtx, L"R34_DACR_CTRL",     NAUL_DACR_CTRL);
     NauLogReg(DevCtx, L"R50_CLASSG_CTRL",   NAUL_CLASSG_CTRL);
     NauLogReg(DevCtx, L"R58_DEVICE_ID",     NAUL_I2C_DEVICE_ID);
+    NauLogReg(DevCtx, L"R59_SARDOUT",        NAUL_SARDOUT_RAM_STATUS);
     NauLogReg(DevCtx, L"R66_BIAS_ADJ",      NAUL_BIAS_ADJ);
     NauLogReg(DevCtx, L"R73_RDAC",          NAUL_RDAC);
+    NauLogReg(DevCtx, L"R72_ANALOG_ADC2",   NAUL_ANALOG_ADC_2);
+    NauLogReg(DevCtx, L"R74_MIC_BIAS",      NAUL_MIC_BIAS);
     NauLogReg(DevCtx, L"R76_BOOST",         NAUL_BOOST);
     NauLogReg(DevCtx, L"R7F_POWER_UP",      NAUL_POWER_UP_CONTROL);
     NauLogReg(DevCtx, L"R80_CHARGE_PUMP",   NAUL_CHARGE_PUMP);
+    NauLogReg(DevCtx, L"R82_GENERAL_STATUS", NAUL_GENERAL_STATUS);
 }
 
 static VOID NauSleepMs(_In_ ULONG Ms)
@@ -609,11 +618,13 @@ static NTSTATUS NauInitRegs(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
         NAUL_PRECHARGE_DIS | NAUL_HP_BOOST_DIS | NAUL_HP_BOOST_G_DIS | NAUL_SHORT_SHUTDOWN_EN,
         NAUL_PRECHARGE_DIS | NAUL_HP_BOOST_DIS | NAUL_HP_BOOST_G_DIS | NAUL_SHORT_SHUTDOWN_EN);
 
-    /* jack detect pin: input, internal pull disabled, active low */
+    /* Jack detect pin: input, internal pull disabled. Keep the hardware
+     * detector polarity consistent with NauJackRead(). */
     NAU_UPD(NAUL_GPIO12_CTRL, NAUL_JKDET_OUTPUT_EN, 0);
     NAU_UPD(NAUL_GPIO12_CTRL, NAUL_JKDET_PULL_EN, NAUL_JKDET_PULL_EN);
     NAU_UPD(NAUL_GPIO12_CTRL, NAUL_JKDET_PULL_UP, 0);
-    NAU_UPD(NAUL_JACK_DET_CTRL, NAUL_JACK_POLARITY, 0);
+    NAU_UPD(NAUL_JACK_DET_CTRL, NAUL_JACK_POLARITY,
+            DevCtx->JackActiveLow ? 0 : NAUL_JACK_POLARITY);
     NAU_UPD(NAUL_JACK_DET_CTRL, NAUL_JACK_INSERT_DEB_MASK, VOLMAR_JACK_INSERT_DEB << 5);
     NAU_UPD(NAUL_JACK_DET_CTRL, NAUL_JACK_EJECT_DEB_MASK, VOLMAR_JACK_EJECT_DEB << 2);
 
@@ -664,6 +675,7 @@ Nau8825_InitializeHardware(
 
     DevCtx->HwInitDone = FALSE;
     DevCtx->Streaming = FALSE;
+    DevCtx->CaptureActive = FALSE;
 
     /* nau8825_reset_chip(): write the reset register twice */
     NAU_WR(NAUL_RESET, 0x0000);
@@ -688,6 +700,9 @@ Nau8825_InitializeHardware(
     status = NauInitRegs(DevCtx);
     if (!NT_SUCCESS(status)) { NauLog(L"InitStatus", (ULONG)status); return status; }
 
+    status = Nau8825_EnableJackDetection(DevCtx);
+    if (!NT_SUCCESS(status)) { NauLog(L"InitStatus", (ULONG)status); return status; }
+
     status = NauSysclkIdle(DevCtx);
     if (!NT_SUCCESS(status)) { NauLog(L"InitStatus", (ULONG)status); return status; }
 
@@ -708,8 +723,8 @@ Nau8825_ConfigureClocks(
     return STATUS_SUCCESS;
 }
 
-/* Stream start: dai_fmt + hw_params + sysclk FLL_BLK + set_pll + DAPM up. */
-static NTSTATUS NauPlaybackOn(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
+/* Shared SSP0 clock setup for playback and capture. */
+static NTSTATUS NauStreamClockOn(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
 {
     NTSTATUS status;
 
@@ -718,7 +733,9 @@ static NTSTATUS NauPlaybackOn(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
         NAUL_I2S_DL_MASK | NAUL_I2S_DF_MASK | NAUL_I2S_BP_MASK | NAUL_I2S_PCMB_MASK,
         NAUL_I2S_DL_32 | NAUL_I2S_DF_I2S);
     NAU_UPD(NAUL_I2S_PCM_CTRL2, NAUL_I2S_MS_MASK, 0);          /* clock consumer */
-    NAU_UPD(NAUL_CLK_DIVIDER, NAUL_CLK_DAC_SRC_MASK, VOLMAR_DAC_CLK_SRC);
+    NAU_UPD(NAUL_CLK_DIVIDER,
+            NAUL_CLK_DAC_SRC_MASK | NAUL_CLK_ADC_SRC_MASK,
+            VOLMAR_DAC_CLK_SRC | VOLMAR_ADC_CLK_SRC);
 
     /* sysclk NAU8825_CLK_FLL_BLK: FLL reference = BCLK, max gain error */
     NAU_UPD(NAUL_FLL3, NAUL_FLL_CLK_SRC_MASK | NAUL_GAIN_ERR_MASK,
@@ -745,6 +762,18 @@ static NTSTATUS NauPlaybackOn(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
     NAU_UPD(NAUL_FLL6, NAUL_SDM_EN | NAUL_CUTOFF500, 0);
     NauSleepMs(2);
     NAU_UPD(NAUL_CLK_DIVIDER, NAUL_CLK_SRC_MASK, NAUL_CLK_SRC_VCO);
+
+    return STATUS_SUCCESS;
+}
+
+/* Stream start: dai_fmt + hw_params + sysclk FLL_BLK + set_pll + DAPM up. */
+static NTSTATUS NauPlaybackOn(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    if (!DevCtx->CaptureActive) {
+        status = NauStreamClockOn(DevCtx);
+        if (!NT_SUCCESS(status)) return status;
+    }
 
     /* DAPM power-up order (supplies, DACs, then PGA_S subsequences 0..10) */
     NAU_UPD(NAUL_ENA_CTRL, NAUL_ENABLE_DAC_CLK, NAUL_ENABLE_DAC_CLK);         /* DDAC Clock */
@@ -799,11 +828,18 @@ static NTSTATUS NauPlaybackOff(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
     NAU_UPD(NAUL_ENA_CTRL, NAUL_ENABLE_DACL | NAUL_ENABLE_DACR, 0);
     NAU_UPD(NAUL_ENA_CTRL, NAUL_ENABLE_DAC_CLK, 0);
 
-    return NauSysclkIdle(DevCtx);                                             /* System Clock PMD */
+    if (!DevCtx->CaptureActive)
+        return NauSysclkIdle(DevCtx);                                         /* System Clock PMD */
+    return STATUS_SUCCESS;
 }
 
 /* =========================================================================
- * Nau8825_EnableJackDetection — SAR ADC, Mic Bias & Interrupt Masking
+ * Nau8825_EnableJackDetection — prepare automatic Mic/GND detection.
+ *
+ * Physical insertion remains polled because the ACPI GPIO interrupt routing
+ * is not reliable on every Windows firmware. Once insertion is stable,
+ * ProcessJackStateChange starts the codec's automatic CTIA/OMTP detector and
+ * reads GENERAL_STATUS[11:10], just as the Linux NAU8825 driver does.
  * ========================================================================= */
 
 _Use_decl_annotations_
@@ -816,29 +852,155 @@ Nau8825_EnableJackDetection(
     PAGED_CODE();
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
-    /* Enable Mic Bias: 2.2V low-noise output for headset electret microphones */
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_MIC_BIAS,
-                       NAU8825_MICBIAS_POWERUP | NAU8825_MICBIAS_VOLTAGE_2_2V);
-    if (!NT_SUCCESS(status)) return status;
+    /* Ground headphone outputs and enable automatic Mic/GND switching. */
+    NAU_UPD(NAUL_HSD_CTRL,
+            NAUL_HSD_AUTO_MODE | NAUL_HSD_HPL_GND | NAUL_HSD_HPR_GND,
+            NAUL_HSD_AUTO_MODE | NAUL_HSD_HPL_GND | NAUL_HSD_HPR_GND);
 
-    /* Enable SAR ADC for impedance and headset pinout detection */
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_SAR_CTRL,
-                       NAU8825_SAR_ADC_EN | 0x0015);
-    if (!NT_SUCCESS(status)) return status;
+    /* Volmar's board-specific SAR settings from coreboot. Power is enabled
+     * only while classifying an inserted plug or servicing headset buttons. */
+    NAU_UPD(NAUL_SAR_CTRL,
+            NAUL_SAR_TRACKING_GAIN_MASK | NAUL_SAR_HV_SEL_MASK |
+            NAUL_SAR_RES_SEL_MASK | NAUL_SAR_COMPARE_TIME_MASK |
+            NAUL_SAR_SAMPLING_TIME_MASK,
+            (VOLMAR_SAR_VOLTAGE << 8) | NAUL_SAR_RES_SEL_70K |
+            (VOLMAR_SAR_COMPARE_TIME << 2) | VOLMAR_SAR_SAMPLE_TIME);
 
-    /* JACK_DET_CTRL (polarity, debounce) is set by NauInitRegs() exactly as
-     * Linux does; the old fixed write here overwrote it and is gone. */
+    NAU_UPD(NAUL_MIC_BIAS,
+            NAUL_MICBIAS_VOLTAGE_MASK,
+            VOLMAR_MICBIAS_VOLTAGE);
 
-    /* Unmask Jack Insert, Jack Eject, and Key/Button Interrupts (active low/high) */
-    /* Note: In NAU8825 INTERRUPT_MASK, bit = 0 enables, bit = 1 masks */
-    status = I2cWriteRegister16(DevCtx->SpbTarget, NAU8825_REG_INTERRUPT_MASK,
-                       (UINT16)~(NAU8825_IRQ_INSERT_EN | NAU8825_IRQ_EJECT_EN |
-                                 NAU8825_IRQ_KEY_SHORT_PRESS_EN | NAU8825_IRQ_KEY_RELEASE_EN));
-    if (!NT_SUCCESS(status)) return status;
+    /* Keep codec IRQ outputs masked; Windows uses GPIO polling. The status
+     * bits still latch and are polled during automatic type detection. */
+    NAU_UPD(NAUL_INTERRUPT_MASK, 0x07FF, 0x07FF);
 
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-        "Nau8825Audio: Jack detection engine enabled\n"));
+        "Nau8825Audio: Jack/Mic-GND detection engine prepared\n"));
 
+    return STATUS_SUCCESS;
+}
+
+/* Power down the headset type/button detector and return every jack contact
+ * to its safe grounded state. */
+static NTSTATUS NauDisableHeadsetMic(_In_ PNAU8825_DEVICE_CONTEXT DevCtx)
+{
+    NTSTATUS status;
+
+    NAU_UPD(NAUL_MIC_BIAS,
+            NAUL_MICBIAS_JKSLV | NAUL_MICBIAS_JKR2 |
+            NAUL_MICBIAS_LOWNOISE | NAUL_MICBIAS_POWERUP, 0);
+    NAU_UPD(NAUL_SAR_CTRL, NAUL_SAR_ADC_EN, 0);
+    NAU_UPD(NAUL_HSD_CTRL,
+            NAUL_HSD_AUTO_MODE | NAUL_HSD_MICGND1 | NAUL_HSD_MICGND2 |
+            NAUL_HSD_HPL_GND | NAUL_HSD_HPR_GND,
+            NAUL_HSD_MICGND1 | NAUL_HSD_MICGND2 |
+            NAUL_HSD_HPL_GND | NAUL_HSD_HPR_GND);
+    if (!DevCtx->CaptureActive)
+        NAU_UPD(NAUL_ENA_CTRL, NAUL_ENABLE_ADC, 0);
+    return STATUS_SUCCESS;
+}
+
+/* Run the NAU8825 automatic Mic/GND switcher. GENERAL_STATUS[11:10] is:
+ *   0 = headphones, 1 = OMTP mic on JKR2, 2 = CTIA mic on JKSLV,
+ *   3 = high-impedance/ambiguous headset.
+ * The common ambiguous case is routed as CTIA, while its raw code remains in
+ * the diagnostic log for hardware-specific follow-up. */
+static NTSTATUS NauDetectHeadsetMic(
+    _In_ PNAU8825_DEVICE_CONTEXT DevCtx,
+    _Out_ BOOLEAN* MicPresent
+    )
+{
+    NTSTATUS status;
+    UINT16 irqStatus = 0;
+    UINT16 generalStatus = 0;
+    ULONG detectCode;
+    BOOLEAN complete = FALSE;
+
+    *MicPresent = FALSE;
+
+    /* Internal VCO and ADC are required while the automatic detector runs. */
+    status = NauSysclkIdle(DevCtx);
+    if (!NT_SUCCESS(status)) return status;
+
+    (void)I2cWriteRegister16(DevCtx->SpbTarget, NAUL_INT_CLR_KEY_STATUS, 0xFFFF);
+    NAU_UPD(NAUL_HSD_CTRL,
+            NAUL_HSD_AUTO_MODE | NAUL_HSD_HPL_GND | NAUL_HSD_HPR_GND,
+            NAUL_HSD_AUTO_MODE | NAUL_HSD_HPL_GND | NAUL_HSD_HPR_GND);
+    NAU_UPD(NAUL_MIC_BIAS,
+            NAUL_MICBIAS_POWERUP | NAUL_MICBIAS_LOWNOISE |
+            NAUL_MICBIAS_VOLTAGE_MASK,
+            NAUL_MICBIAS_POWERUP | NAUL_MICBIAS_LOWNOISE |
+            VOLMAR_MICBIAS_VOLTAGE);
+    NAU_UPD(NAUL_SAR_CTRL, NAUL_SAR_ADC_EN, NAUL_SAR_ADC_EN);
+    NAU_UPD(NAUL_ENA_CTRL, NAUL_ENABLE_ADC, NAUL_ENABLE_ADC);
+    NAU_WR(NAUL_INTERRUPT_DIS_CTRL, 0x0000);
+
+    /* One generated frame-sync edge starts the automatic detector even when
+     * SSP0 has not begun streaming yet. */
+    NAU_UPD(NAUL_I2S_PCM_CTRL2, NAUL_I2S_MS_MASK, NAUL_I2S_MS_MASK);
+    NAU_UPD(NAUL_I2S_PCM_CTRL2, NAUL_I2S_MS_MASK, 0);
+    NAU_UPD(NAUL_JACK_DET_CTRL, NAUL_JACK_DET_RESTART, NAUL_JACK_DET_RESTART);
+    NAU_UPD(NAUL_JACK_DET_CTRL, NAUL_JACK_DET_RESTART, 0);
+
+    for (ULONG i = 0; i < 75; i++) {
+        status = I2cReadRegister16(DevCtx->SpbTarget, NAUL_IRQ_STATUS, &irqStatus);
+        if (!NT_SUCCESS(status)) return status;
+        if (irqStatus & NAUL_HEADSET_COMPLETE_IRQ) {
+            complete = TRUE;
+            break;
+        }
+        status = I2cReadRegister16(DevCtx->SpbTarget, NAUL_GENERAL_STATUS, &generalStatus);
+        if (!NT_SUCCESS(status)) return status;
+        if (generalStatus & NAUL_GENERAL_MIC_DETECT_MASK)
+            break;
+        NauSleepMs(10);
+    }
+
+    status = I2cReadRegister16(DevCtx->SpbTarget, NAUL_GENERAL_STATUS, &generalStatus);
+    if (!NT_SUCCESS(status)) return status;
+    detectCode = (generalStatus & NAUL_GENERAL_MIC_DETECT_MASK) >>
+                 NAUL_GENERAL_MIC_DETECT_SHIFT;
+
+    NauLog(L"MicDetectComplete", complete);
+    NauLog(L"MicDetectIrqStatus", irqStatus);
+    NauLog(L"GeneralStatus", generalStatus);
+    NauLog(L"MicDetectCode", detectCode);
+
+    /* Some ACPI implementations do not expose the codec's completion IRQ,
+     * but GENERAL_STATUS is still updated. Trust any non-zero hardware result
+     * even when the completion latch was not observed. */
+    if (detectCode != 0) {
+        UINT16 hsdRoute;
+        UINT16 biasRoute;
+        UINT16 sarInput;
+
+        if (detectCode == 1) {              /* OMTP: mic is on JKR2 */
+            hsdRoute = NAUL_HSD_MICGND2;
+            biasRoute = NAUL_MICBIAS_JKR2;
+            sarInput = NAUL_SAR_INPUT_JKR2;
+        } else {                            /* CTIA or ambiguous: JKSLV */
+            hsdRoute = NAUL_HSD_MICGND1;
+            biasRoute = NAUL_MICBIAS_JKSLV;
+            sarInput = NAUL_SAR_INPUT_JKSLV;
+        }
+
+        NAU_UPD(NAUL_HSD_CTRL,
+                NAUL_HSD_AUTO_MODE | NAUL_HSD_MICGND1 | NAUL_HSD_MICGND2,
+                hsdRoute);
+        NAU_UPD(NAUL_MIC_BIAS,
+                NAUL_MICBIAS_JKSLV | NAUL_MICBIAS_JKR2,
+                biasRoute);
+        NAU_UPD(NAUL_SAR_CTRL, NAUL_SAR_INPUT_MASK, sarInput);
+        *MicPresent = TRUE;
+    } else {
+        status = NauDisableHeadsetMic(DevCtx);
+        if (!NT_SUCCESS(status)) return status;
+    }
+
+    if (complete)
+        (void)I2cWriteRegister16(DevCtx->SpbTarget,
+                                 NAUL_INT_CLR_KEY_STATUS,
+                                 NAUL_HEADSET_COMPLETE_IRQ);
     return STATUS_SUCCESS;
 }
 
@@ -895,16 +1057,59 @@ Nau8825_SetCaptureState(
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
     if (Enable) {
-        status = I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
-                        NAU8825_ENABLE_ADC | NAU8825_ENABLE_ADC_CLK,
-                        NAU8825_ENABLE_ADC | NAU8825_ENABLE_ADC_CLK);
-        if (!NT_SUCCESS(status)) return status;
+        if (DevCtx->CaptureActive) return STATUS_SUCCESS;
+        if (!DevCtx->HwInitDone) {
+            status = Nau8825_InitializeHardware(DevCtx);
+            if (!NT_SUCCESS(status)) return status;
+        }
+        if (!DevCtx->MicPresent) return STATUS_DEVICE_NOT_CONNECTED;
+
+        if (!DevCtx->Streaming) {
+            status = NauStreamClockOn(DevCtx);
+            if (!NT_SUCCESS(status)) return status;
+        }
+
+        /* AIFTX drives ADCDAT only while capture is active. */
+        NAU_UPD(NAUL_I2S_PCM_CTRL2, NAUL_I2S_TRISTATE, 0);
+        NAU_UPD(NAUL_ENA_CTRL, NAUL_ENABLE_ADC, 0);
+
+        /* Keep the detected CTIA/OMTP bias route and power the analog front
+         * end in Linux DAPM order. */
+        NAU_UPD(NAUL_MIC_BIAS,
+                NAUL_MICBIAS_POWERUP | NAUL_MICBIAS_LOWNOISE,
+                NAUL_MICBIAS_POWERUP | NAUL_MICBIAS_LOWNOISE);
+        NAU_UPD(NAUL_POWER_UP_CONTROL, NAUL_FEPGA_POWERUP, NAUL_FEPGA_POWERUP);
+        NAU_UPD(NAUL_FEPGA, NAUL_FEPGA_ACDC_MASK,
+                NAUL_FEPGA_ACDC_MICP | NAUL_FEPGA_ACDC_MICN);
+        NAU_UPD(NAUL_BOOST, NAUL_DISCHARGE_EN, NAUL_DISCHARGE_EN);
+        NauSleepMs(40);
+        NAU_UPD(NAUL_BOOST, NAUL_DISCHARGE_EN, 0);
+        NAU_UPD(NAUL_FEPGA, NAUL_FEPGA_ACDC_MASK, 0);
+
+        NAU_UPD(NAUL_ENA_CTRL, NAUL_ENABLE_ADC_CLK, NAUL_ENABLE_ADC_CLK);
+        NAU_UPD(NAUL_ANALOG_ADC_2, NAUL_ANALOG_ADC_POWERUP, NAUL_ANALOG_ADC_POWERUP);
+        NauSleepMs(125);
+        NAU_UPD(NAUL_ENA_CTRL, NAUL_ENABLE_ADC, NAUL_ENABLE_ADC);
+
         DevCtx->CaptureActive = TRUE;
+        NauLog(L"CaptureOnStatus", 0);
+        NauLogReg(DevCtx, L"Capture_R01_ENA_CTRL", NAUL_ENA_CTRL);
+        NauLogReg(DevCtx, L"Capture_R1D_I2S_CTRL2", NAUL_I2S_PCM_CTRL2);
+        NauLogReg(DevCtx, L"Capture_R72_ANALOG_ADC2", NAUL_ANALOG_ADC_2);
+        NauLogReg(DevCtx, L"Capture_R74_MIC_BIAS", NAUL_MIC_BIAS);
     } else {
-        status = I2cUpdateBits16(DevCtx->SpbTarget, NAU8825_REG_ENA_CTRL,
-                        NAU8825_ENABLE_ADC | NAU8825_ENABLE_ADC_CLK, 0);
-        if (!NT_SUCCESS(status)) return status;
+        if (!DevCtx->CaptureActive) return STATUS_SUCCESS;
+        NAU_UPD(NAUL_ENA_CTRL, NAUL_ENABLE_ADC, 0);
+        NAU_UPD(NAUL_ANALOG_ADC_2, NAUL_ANALOG_ADC_POWERUP, 0);
+        NAU_UPD(NAUL_ENA_CTRL, NAUL_ENABLE_ADC_CLK, 0);
+        NAU_UPD(NAUL_POWER_UP_CONTROL, NAUL_FEPGA_POWERUP, 0);
+        NAU_UPD(NAUL_I2S_PCM_CTRL2, NAUL_I2S_TRISTATE, NAUL_I2S_TRISTATE);
         DevCtx->CaptureActive = FALSE;
+        if (!DevCtx->Streaming) {
+            status = NauSysclkIdle(DevCtx);
+            if (!NT_SUCCESS(status)) return status;
+        }
+        NauLog(L"CaptureOffStatus", 0);
     }
 
     return STATUS_SUCCESS;
@@ -952,7 +1157,9 @@ Nau8825_ProcessJackStateChange(
     BOOLEAN inserted = FALSE;
     UINT16 raw = 0;
     BOOLEAN changed = FALSE;
+    BOOLEAN micPresent = FALSE;
     CSAUDIO_JACK_STATE newJackState;
+    NTSTATUS detectStatus = STATUS_SUCCESS;
 
     PAGED_CODE();
 
@@ -987,8 +1194,19 @@ Nau8825_ProcessJackStateChange(
         return;
     }
 
-    newJackState = inserted ? CSAUDIO_JACK_HEADPHONES_3POLE : CSAUDIO_JACK_UNPLUGGED;
-    DevCtx->MicPresent = FALSE;
+    if (inserted) {
+        detectStatus = NauDetectHeadsetMic(DevCtx, &micPresent);
+        if (!NT_SUCCESS(detectStatus)) {
+            micPresent = FALSE;
+            NauLog(L"MicDetectStatus", (ULONG)detectStatus);
+        }
+        newJackState = micPresent ? CSAUDIO_JACK_HEADSET_4POLE
+                                  : CSAUDIO_JACK_HEADPHONES_3POLE;
+    } else {
+        detectStatus = NauDisableHeadsetMic(DevCtx);
+        newJackState = CSAUDIO_JACK_UNPLUGGED;
+    }
+    DevCtx->MicPresent = micPresent;
     DevCtx->CurrentJackState = newJackState;
     DevCtx->JackChanges++;
     WdfWaitLockRelease(DevCtx->JackLock);
@@ -997,6 +1215,9 @@ Nau8825_ProcessJackStateChange(
     NauLog(L"JackInserted", inserted);
     NauLog(L"JackChanges", DevCtx->JackChanges);
     NauLog(L"JackActiveLow", DevCtx->JackActiveLow);
+    NauLog(L"MicPresent", micPresent);
+    NauLog(L"JackState", newJackState);
+    NauLog(L"MicDetectStatus", (ULONG)detectStatus);
 
     /* Complete all pending notification requests (CsAudioEndpointSwitcher) */
     if (DevCtx->JackNotificationQueue) {
@@ -1067,9 +1288,9 @@ Nau8825_EvtInterruptWorkItem(
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
         "Nau8825Audio: EvtInterruptWorkItem triggered\n"));
 
-    if (devCtx->SpbTarget) {
-        I2cWriteRegister16(devCtx->SpbTarget, NAU8825_REG_INT_CLR_KEY_STATUS, 0xFFFF);
-    }
+    /* Do not clear codec status here: the polling state machine consumes the
+     * headset-completion bit after reading GENERAL_STATUS. Clearing it first
+     * races automatic CTIA/OMTP classification. */
     Nau8825_ProcessJackStateChange(devCtx);
 }
 
@@ -1093,7 +1314,6 @@ Nau8825_EvtIoDeviceControl(
     size_t bytesReturned = 0;
 
     UNREFERENCED_PARAMETER(OutputBufferLength);
-    UNREFERENCED_PARAMETER(InputBufferLength);
 
     switch (IoControlCode) {
 
@@ -1110,16 +1330,34 @@ Nau8825_EvtIoDeviceControl(
     }
 
     case IOCTL_CSAUDIO_STREAM_START: {
+        PCSAUDIO_STREAM_CONFIG config = NULL;
+        BOOLEAN capture = FALSE;
+        if (InputBufferLength >= sizeof(CSAUDIO_STREAM_CONFIG) &&
+            NT_SUCCESS(WdfRequestRetrieveInputBuffer(Request, sizeof(CSAUDIO_STREAM_CONFIG),
+                                                      (PVOID*)&config, NULL))) {
+            capture = (config->EndpointType == CSAudioEndpointTypeMicJack);
+        }
         KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-            "Nau8825Audio: IOCTL_CSAUDIO_STREAM_START received\n"));
-        status = Nau8825_SetPlaybackState(devCtx, TRUE);
+            "Nau8825Audio: IOCTL_CSAUDIO_STREAM_START received (%s)\n",
+            capture ? "capture" : "playback"));
+        status = capture ? Nau8825_SetCaptureState(devCtx, TRUE)
+                         : Nau8825_SetPlaybackState(devCtx, TRUE);
         break;
     }
 
     case IOCTL_CSAUDIO_STREAM_STOP: {
+        PCSAUDIO_STREAM_CONFIG config = NULL;
+        BOOLEAN capture = FALSE;
+        if (InputBufferLength >= sizeof(CSAUDIO_STREAM_CONFIG) &&
+            NT_SUCCESS(WdfRequestRetrieveInputBuffer(Request, sizeof(CSAUDIO_STREAM_CONFIG),
+                                                      (PVOID*)&config, NULL))) {
+            capture = (config->EndpointType == CSAudioEndpointTypeMicJack);
+        }
         KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-            "Nau8825Audio: IOCTL_CSAUDIO_STREAM_STOP received\n"));
-        status = Nau8825_SetPlaybackState(devCtx, FALSE);
+            "Nau8825Audio: IOCTL_CSAUDIO_STREAM_STOP received (%s)\n",
+            capture ? "capture" : "playback"));
+        status = capture ? Nau8825_SetCaptureState(devCtx, FALSE)
+                         : Nau8825_SetPlaybackState(devCtx, FALSE);
         break;
     }
 

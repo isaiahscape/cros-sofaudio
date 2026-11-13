@@ -32,6 +32,10 @@
 #define NAUL_HSD_CTRL           0x0C
 #define NAUL_JACK_DET_CTRL      0x0D
 #define NAUL_INTERRUPT_MASK     0x0F
+#define NAUL_IRQ_STATUS         0x10
+#define NAUL_INT_CLR_KEY_STATUS 0x11
+#define NAUL_INTERRUPT_DIS_CTRL 0x12
+#define NAUL_SAR_CTRL           0x13
 #define NAUL_GPIO12_CTRL        0x1A
 #define NAUL_I2S_PCM_CTRL1      0x1C
 #define NAUL_I2S_PCM_CTRL2      0x1D
@@ -44,24 +48,31 @@
 #define NAUL_DACR_CTRL          0x34
 #define NAUL_CLASSG_CTRL        0x50
 #define NAUL_I2C_DEVICE_ID      0x58
+#define NAUL_SARDOUT_RAM_STATUS 0x59
 #define NAUL_FLL2_LOWER         0x5A
 #define NAUL_FLL2_UPPER         0x5B
 #define NAUL_BIAS_ADJ           0x66
 #define NAUL_ANALOG_CONTROL_2   0x6A
+#define NAUL_ANALOG_ADC_2       0x72
 #define NAUL_RDAC               0x73
 #define NAUL_MIC_BIAS           0x74
 #define NAUL_BOOST              0x76
+#define NAUL_FEPGA              0x77
 #define NAUL_POWER_UP_CONTROL   0x7F
 #define NAUL_CHARGE_PUMP        0x80
+#define NAUL_GENERAL_STATUS     0x82
 
 /* ---- bits ------------------------------------------------------------ */
 #define NAUL_ENABLE_DACR        (1u << 10)
 #define NAUL_ENABLE_DACL        (1u << 9)
+#define NAUL_ENABLE_ADC         (1u << 8)
+#define NAUL_ENABLE_ADC_CLK     (1u << 7)
 #define NAUL_ENABLE_DAC_CLK     (1u << 6)
 
 #define NAUL_CLK_SRC_MASK       (1u << 15)
 #define NAUL_CLK_SRC_VCO        (1u << 15)
 #define NAUL_CLK_SRC_MCLK       0
+#define NAUL_CLK_ADC_SRC_MASK   (0x3u << 6)
 #define NAUL_CLK_DAC_SRC_MASK   (0x3u << 4)
 #define NAUL_CLK_MCLK_SRC_MASK  0xFu
 
@@ -83,13 +94,18 @@
 
 #define NAUL_HSD_HPL_GND        (1u << 0)   /* "HPOL Pulldown" (inverted widget) */
 #define NAUL_HSD_HPR_GND        (1u << 1)
+#define NAUL_HSD_MICGND2        (1u << 2)
+#define NAUL_HSD_MICGND1        (1u << 3)
+#define NAUL_HSD_AUTO_MODE      (1u << 6)
 
 #define NAUL_JACK_POLARITY      (1u << 1)
+#define NAUL_JACK_DET_RESTART   (1u << 9)
 #define NAUL_JACK_INSERT_DEB_MASK (0x7u << 5)
 #define NAUL_JACK_EJECT_DEB_MASK  (0x7u << 2)
 
 #define NAUL_IRQ_PIN_PULLUP     (1u << 14)
 #define NAUL_IRQ_PIN_PULL_EN    (1u << 13)
+#define NAUL_HEADSET_COMPLETE_IRQ (1u << 10)
 
 #define NAUL_JKDET_PULL_UP      (1u << 11)
 #define NAUL_JKDET_PULL_EN      (1u << 9)
@@ -102,6 +118,7 @@
 #define NAUL_I2S_DF_MASK        0x3u
 #define NAUL_I2S_DF_I2S         0x2u
 #define NAUL_I2S_MS_MASK        (1u << 3)
+#define NAUL_I2S_TRISTATE       (1u << 15)
 
 #define NAUL_DIS_FS_SHORT_DET   (1u << 13)
 #define NAUL_ADC_SINC4_EN       (1u << 4)
@@ -146,12 +163,38 @@
 #define NAUL_RDAC_VREF_MASK     (0x3u << 2)
 
 #define NAUL_MICBIAS_VOLTAGE_MASK 0x7u
+#define NAUL_MICBIAS_POWERUP    (1u << 8)
+#define NAUL_MICBIAS_LOWNOISE   (1u << 10)
+#define NAUL_MICBIAS_JKR2       (1u << 12)
+#define NAUL_MICBIAS_JKSLV      (1u << 14)
+
+#define NAUL_SAR_SAMPLING_TIME_MASK (0x3u << 0)
+#define NAUL_SAR_COMPARE_TIME_MASK  (0x3u << 2)
+#define NAUL_SAR_RES_SEL_MASK       (0x7u << 4)
+#define NAUL_SAR_RES_SEL_70K        (1u << 4)
+#define NAUL_SAR_HV_SEL_MASK        (1u << 7)
+#define NAUL_SAR_TRACKING_GAIN_MASK (0x7u << 8)
+#define NAUL_SAR_INPUT_MASK         (1u << 11)
+#define NAUL_SAR_INPUT_JKR2         0
+#define NAUL_SAR_INPUT_JKSLV        (1u << 11)
+#define NAUL_SAR_ADC_EN             (1u << 12)
+
+#define NAUL_GENERAL_MIC_DETECT_SHIFT 10
+#define NAUL_GENERAL_MIC_DETECT_MASK  (0x3u << NAUL_GENERAL_MIC_DETECT_SHIFT)
 
 #define NAUL_PRECHARGE_DIS      (1u << 13)
 #define NAUL_GLOBAL_BIAS_EN     (1u << 12)
+#define NAUL_DISCHARGE_EN       (1u << 11)
 #define NAUL_HP_BOOST_DIS       (1u << 9)      /* "HP Boost Driver" (inverted) */
 #define NAUL_HP_BOOST_G_DIS     (1u << 8)
 #define NAUL_SHORT_SHUTDOWN_EN  (1u << 6)
+
+#define NAUL_FEPGA_ACDC_MASK    (0x3u << 14)
+#define NAUL_FEPGA_ACDC_MICP    (0x1u << 14)
+#define NAUL_FEPGA_ACDC_MICN    (0x2u << 14)
+#define NAUL_FEPGA_POWERUP      (1u << 14)
+
+#define NAUL_ANALOG_ADC_POWERUP (1u << 6)
 
 #define NAUL_PU_OUT_STAGE1      ((1u << 5) | (1u << 4))  /* R | L */
 #define NAUL_PU_OUT_STAGE2      ((1u << 3) | (1u << 2))
@@ -166,6 +209,9 @@
 /* ---- volmar board values (coreboot overridetree.cb) ------------------ */
 #define VOLMAR_VREF_IMPEDANCE   2      /* 125 kOhm */
 #define VOLMAR_MICBIAS_VOLTAGE  6      /* 2.754 V  */
+#define VOLMAR_SAR_VOLTAGE      0      /* VDDA / tracking gain 0 */
+#define VOLMAR_SAR_COMPARE_TIME 0      /* 500 ns */
+#define VOLMAR_SAR_SAMPLE_TIME  0      /* 2 us */
 #define VOLMAR_JACK_INSERT_DEB  7
 #define VOLMAR_JACK_EJECT_DEB   7
 
@@ -183,6 +229,7 @@
 #define VOLMAR_FLL_INT          40u
 #define VOLMAR_FLL_REF_DIV      0u
 #define VOLMAR_DAC_CLK_SRC      (2u << 4)   /* osr_dac_sel[OSR64].clk_src = 2 */
+#define VOLMAR_ADC_CLK_SRC      (2u << 6)   /* osr_adc_sel[OSR64].clk_src = 2 */
 
 /* jack polling period */
 #define NAU_JACK_POLL_MS        300

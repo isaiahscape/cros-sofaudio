@@ -161,6 +161,18 @@ int main(int argc, char* argv[]) {
             printf("  Silicon Device ID (Reg 0x58): 0x%04X\n", regIo.Value);
         }
 
+        /* Automatic CTIA/OMTP detector result: GENERAL_STATUS[11:10]. */
+        regIo.Register = NAU8825_REG_GENERAL_STATUS;
+        if (DeviceIoControl(hNau8825, IOCTL_CSAUDIO_READ_REG, &regIo, sizeof(regIo), &regIo, sizeof(regIo), &bytes, NULL)) {
+            UINT16 micCode = (regIo.Value & NAU8825_MIC_DETECT_MASK) >> NAU8825_MIC_DETECT_SHIFT;
+            const char* micType = (micCode == 0) ? "No microphone" :
+                                  (micCode == 1) ? "OMTP headset microphone" :
+                                  (micCode == 2) ? "CTIA headset microphone" :
+                                                   "High-impedance/ambiguous headset";
+            printf("  Headset Detector (Reg 0x82): 0x%04X, code %u (%s)\n",
+                   regIo.Value, micCode, micType);
+        }
+
         /* Query current jack status */
         CSAUDIO_JACK_STATE state = CSAUDIO_JACK_UNPLUGGED;
         if (DeviceIoControl(hNau8825, IOCTL_CSAUDIO_GET_JACK_STATE, NULL, 0, &state, sizeof(state), &bytes, NULL)) {

@@ -257,6 +257,7 @@ NTSTATUS CCsAudioSofHW::NotifySidecarCodec(CSAudioEndpointType endpoint, BOOL st
     config.BitsPerSample = 16;
     config.Channels = 2;
     config.SlotWidth = 16;
+    config.EndpointType = (UINT8)endpoint;
 
     ULONG ioctl = start ? IOCTL_CSAUDIO_STREAM_START : IOCTL_CSAUDIO_STREAM_STOP;
     NTSTATUS status = STATUS_SUCCESS;

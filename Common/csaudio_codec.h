@@ -109,6 +109,7 @@ typedef struct _CSAUDIO_STREAM_CONFIG {
     UINT8  SlotWidth;        /* 16, 24, 32 */
     UINT8  RxSlot;           /* TDM slot index for playback */
     UINT8  TxSlot;           /* TDM slot index for feedback/capture */
+    UINT8  EndpointType;     /* CSAudioEndpointType; playback or capture path */
 } CSAUDIO_STREAM_CONFIG, *PCSAUDIO_STREAM_CONFIG;
 
 /* =========================================================================

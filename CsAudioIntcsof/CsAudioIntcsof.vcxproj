@@ -124,6 +124,7 @@
     <ClInclude Include="sof_regs.h" />
     <ClInclude Include="sof_hp_pipeline.h" />
     <ClInclude Include="sof_spk_pipeline.h" />
+    <ClInclude Include="sof_capture_pipelines.h" />
     <ClInclude Include="..\Common\csaudio_codec.h" />
     <ClInclude Include="..\SklHdaudBus\adsp.h" />
   </ItemGroup>

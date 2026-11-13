@@ -30,10 +30,17 @@ typedef struct _HDAC_BDLENTRY {
 
 #define MAX_TOPOLOGY_NODES      20
 
-enum { SOF_PATH_SPK = 0, SOF_PATH_HP = 1, SOF_PATH_COUNT = 2, SOF_PATH_NONE = 0xFF };
+enum {
+    SOF_PATH_SPK = 0,
+    SOF_PATH_HP,
+    SOF_PATH_MICJACK,
+    SOF_PATH_DMIC,
+    SOF_PATH_COUNT,
+    SOF_PATH_NONE = 0xFF
+};
 
 typedef struct _SOF_RENDER_PATH {
-    HANDLE      hStream;        // HDA host output stream (from SklHdaudBus)
+    HANDLE      hStream;        // HDA host input/output stream (from SklHdaudBus)
     UINT8       tag;            // its stream tag (= DSP host DMA channel + 1)
     SHORT       running;        // WaveRT streams currently running on it
     UINT32      bufBytes;       // WaveRT cyclic buffer size
@@ -84,14 +91,12 @@ protected:
     NHLT_INFO                   m_nhltInfo;
     BUS_INTERFACE_STANDARD      m_pciConfig;
 
-    // Render paths: one host DMA stream + one DSP pipeline per output.
+    // One host DMA stream + one DSP pipeline per physical audio path.
     //   SOF_PATH_SPK: speaker endpoint  -> pipeline 1 -> SSP1 -> 2x MAX98373
     //   SOF_PATH_HP : headphone endpoint -> pipeline 2 -> SSP0 -> NAU88L25
+    //   SOF_PATH_MICJACK: NAU88L25 ADC -> SSP0 -> pipeline 3 -> headset mic
+    //   SOF_PATH_DMIC: internal PDM array -> DMIC0 -> pipeline 4 -> mic array
     SOF_RENDER_PATH             m_path[SOF_PATH_COUNT];
-
-    HANDLE                      m_hCaptureStream;
-    UINT8                       m_captureStreamTag;
-    SHORT                       m_runningCaptureStreams;
 
     // Hardware parameters
     UINT32                      m_sampleRate;

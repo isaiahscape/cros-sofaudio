@@ -23,7 +23,8 @@ What it contains
   Drivers\SklHdaudBus     Intel audio bus driver (CoolStar) - only installed
                           when the laptop has no working bus driver yet
   Drivers\CsAudioIntcsof  boots Intel Sound Open Firmware on the audio DSP,
-                          speaker pipeline (SSP1) and headphone pipeline (SSP0)
+                          speaker/headphone playback and DMIC/headset capture
+                          pipelines (SSP1, SSP0 and DMIC0)
   Drivers\Max98373Audio   speaker amps
   Drivers\Nau8825Audio    headphone codec + jack detection
   Switcher\               auto-switch service (csaudioswitcher)
@@ -50,6 +51,9 @@ Jack detection
 
 Problems
   - Collect-Logs.cmd writes audio-log.txt with everything needed to debug.
+  - A TRRS headset should set Codec\MicDetectCode to 1 (OMTP) or 2 (CTIA).
+    DspIpc\MicJackPipelineResult and DspIpc\DmicPipelineResult report whether
+    the two microphone DSP pipelines were created successfully.
   - Uninstall.cmd removes everything, restores the prior vulnerable-driver
     blocklist setting, and lets Windows fall back to older drivers.
   - Disable the DSP boot:
