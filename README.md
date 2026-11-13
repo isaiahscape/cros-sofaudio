@@ -104,7 +104,16 @@ The script builds all driver projects in `Release|x64`, signs them, exports the 
 
 `.github/workflows/build.yml` builds and packages the complete installer on the pinned `windows-2022` image using Visual Studio 2022 (`v143`), Windows SDK/WDK `10.0.26100.0`, KMDF 1.33, and `Release|x64`.
 
-Each CI run creates a unique self-signed code-signing certificate, signs every driver/catalog/tool, bundles only its public certificate, verifies the extracted ZIP, and uploads `cros-sofaudio-<version>.zip` as a workflow artifact. Its private key disappears with the hosted runner; no signing secret or private key is stored in the repository. CI artifacts are test-signed and still require Windows Test Mode, just like local development builds.
+Trusted CI builds read the private PFX from the encrypted repository secrets `DRIVER_SIGNING_PFX_BASE64` and `DRIVER_SIGNING_PFX_PASSWORD`, verify that it matches the public `ChromebookAudio.cer`, sign every driver/catalog/tool, delete the temporary PFX, verify the extracted ZIP, and upload `cros-sofaudio-<version>.zip` as a workflow artifact. The private key is never committed or packaged. CI artifacts are test-signed and still require Windows Test Mode, just like local development builds.
+
+Configure the signing secrets under **Repository Settings → Secrets and variables → Actions**:
+
+```powershell
+# Run locally; paste the clipboard into DRIVER_SIGNING_PFX_BASE64.
+[Convert]::ToBase64String([IO.File]::ReadAllBytes('C:\path\to\ChromebookAudio.pfx')) | Set-Clipboard
+```
+
+Create `DRIVER_SIGNING_PFX_PASSWORD` with the PFX export password. The PFX must contain the private key matching the committed `ChromebookAudio.cer`; the workflow fails before signing if the thumbprints differ.
 
 ---
 

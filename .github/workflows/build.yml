@@ -6,7 +6,6 @@ on:
       - main
     tags:
       - 'v*'
-  pull_request:
   workflow_dispatch:
     inputs:
       package_version:
@@ -106,11 +105,31 @@ jobs:
         id: signing
         shell: pwsh
         env:
-          GENERATE_CI_SIGNING_CERTIFICATE: 1
+          DRIVER_SIGNING_PFX_BASE64: ${{ secrets.DRIVER_SIGNING_PFX_BASE64 }}
+          DRIVER_SIGNING_PFX_PASSWORD: ${{ secrets.DRIVER_SIGNING_PFX_PASSWORD }}
         run: |
-          & cmd.exe /d /c build.cmd
-          if ($LASTEXITCODE -ne 0) {
-              throw "build.cmd failed with exit code $LASTEXITCODE"
+          if ([string]::IsNullOrWhiteSpace($env:DRIVER_SIGNING_PFX_BASE64)) {
+              throw 'Repository secret DRIVER_SIGNING_PFX_BASE64 is not configured.'
+          }
+          if ([string]::IsNullOrEmpty($env:DRIVER_SIGNING_PFX_PASSWORD)) {
+              throw 'Repository secret DRIVER_SIGNING_PFX_PASSWORD is not configured.'
+          }
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'cros-sofaudio-signing.pfx'
+          try {
+              $base64 = $env:DRIVER_SIGNING_PFX_BASE64 -replace '\s', ''
+              [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($base64))
+              $env:SIGN_CERT_PFX_PATH = $pfxPath
+              $env:SIGN_CERT_PFX_PASSWORD = $env:DRIVER_SIGNING_PFX_PASSWORD
+
+              & cmd.exe /d /c build.cmd
+              if ($LASTEXITCODE -ne 0) {
+                  throw "build.cmd failed with exit code $LASTEXITCODE"
+              }
+          } finally {
+              Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+              Remove-Item Env:SIGN_CERT_PFX_PATH -ErrorAction SilentlyContinue
+              Remove-Item Env:SIGN_CERT_PFX_PASSWORD -ErrorAction SilentlyContinue
           }
 
           $certificatePath = Join-Path $env:GITHUB_WORKSPACE 'x64\Release\ChromebookAudio.cer'

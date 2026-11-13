@@ -91,19 +91,6 @@ if %BUILD_EXIT% equ 0 (
         goto :BuildDone
     )
 
-    :: GitHub-hosted WDK builds can remove certificates created before MSBuild.
-    :: Generate the ephemeral CI signer only after compilation/catalog creation.
-    if /i "!GENERATE_CI_SIGNING_CERTIFICATE!"=="1" (
-        set "SIGN_CERT_SHA1="
-        for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\New-CiSigningCertificate.ps1"`) do set "SIGN_CERT_SHA1=%%i"
-        if not defined SIGN_CERT_SHA1 (
-            echo [ERROR] Could not generate the ephemeral CI signing certificate.
-            set "BUILD_RESULT=1"
-            goto :BuildDone
-        )
-        echo [INFO] Generated ephemeral CI signing certificate !SIGN_CERT_SHA1!.
-    )
-
     set "SIGNTOOL="
     for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\Find-SignTool.ps1"`) do set "SIGNTOOL=%%i"
     if not defined SIGNTOOL (
@@ -114,9 +101,14 @@ if %BUILD_EXIT% equ 0 (
 
     set "SIGN_CERT_STORE="
     set "RESOLVED_SIGN_CERT_SHA1="
-    for /f "tokens=1,2 delims=|" %%a in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\Resolve-SigningCertificate.ps1" -CertificatePath "%ROOT_DIR%ChromebookAudio.cer" -OutputPath "%ROOT_DIR%x64\Release\ChromebookAudio.cer"') do (
-        set "SIGN_CERT_STORE=%%a"
-        set "RESOLVED_SIGN_CERT_SHA1=%%b"
+    if defined SIGN_CERT_PFX_PATH (
+        for /f "usebackq delims=" %%a in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\Resolve-PfxSigningCertificate.ps1" -PfxPath "!SIGN_CERT_PFX_PATH!" -ExpectedCertificatePath "%ROOT_DIR%ChromebookAudio.cer" -OutputPath "%ROOT_DIR%x64\Release\ChromebookAudio.cer"`) do set "RESOLVED_SIGN_CERT_SHA1=%%a"
+        set "SIGN_CERT_STORE=PFX"
+    ) else (
+        for /f "tokens=1,2 delims=|" %%a in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\Resolve-SigningCertificate.ps1" -CertificatePath "%ROOT_DIR%ChromebookAudio.cer" -OutputPath "%ROOT_DIR%x64\Release\ChromebookAudio.cer"') do (
+            set "SIGN_CERT_STORE=%%a"
+            set "RESOLVED_SIGN_CERT_SHA1=%%b"
+        )
     )
     if not defined RESOLVED_SIGN_CERT_SHA1 (
         echo [ERROR] Could not resolve the driver signing certificate and private key.
@@ -124,17 +116,12 @@ if %BUILD_EXIT% equ 0 (
         goto :BuildDone
     )
 
-    set "SIGN_STORE_ARGS=/s My"
-    if /i "!SIGN_CERT_STORE!"=="LocalMachine" set "SIGN_STORE_ARGS=/sm /s My"
-
     echo [INFO] Signing driver packages with certificate !RESOLVED_SIGN_CERT_SHA1!...
-    "!SIGNTOOL!" sign /v !SIGN_STORE_ARGS! /sha1 !RESOLVED_SIGN_CERT_SHA1! /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 ^
-        "%ROOT_DIR%x64\Release\Max98373Audio\Max98373Audio.sys" "%ROOT_DIR%x64\Release\Max98373Audio\max98373audio.cat" ^
-        "%ROOT_DIR%x64\Release\Nau8825Audio\Nau8825Audio.sys" "%ROOT_DIR%x64\Release\Nau8825Audio\nau8825audio.cat" ^
-        "%ROOT_DIR%x64\Release\SklHdaudBus\SklHdaudBus.sys" "%ROOT_DIR%x64\Release\SklHdaudBus\sklhdaudbus.cat" ^
-        "%ROOT_DIR%x64\Release\CsAudioIntcsof\CsAudioIntcsof.sys" "%ROOT_DIR%x64\Release\CsAudioIntcsof\csaudiointcsof.cat" ^
-        "%ROOT_DIR%x64\Release\CrosAudioTest.exe" ^
-        "%ROOT_DIR%x64\Release\csaudioendpointswitcher.exe"
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\Sign-BuildOutputs.ps1" ^
+        -SignToolPath "!SIGNTOOL!" ^
+        -Thumbprint "!RESOLVED_SIGN_CERT_SHA1!" ^
+        -StoreLocation "!SIGN_CERT_STORE!" ^
+        -Paths "%ROOT_DIR%x64\Release\Max98373Audio\Max98373Audio.sys;%ROOT_DIR%x64\Release\Max98373Audio\max98373audio.cat;%ROOT_DIR%x64\Release\Nau8825Audio\Nau8825Audio.sys;%ROOT_DIR%x64\Release\Nau8825Audio\nau8825audio.cat;%ROOT_DIR%x64\Release\SklHdaudBus\SklHdaudBus.sys;%ROOT_DIR%x64\Release\SklHdaudBus\sklhdaudbus.cat;%ROOT_DIR%x64\Release\CsAudioIntcsof\CsAudioIntcsof.sys;%ROOT_DIR%x64\Release\CsAudioIntcsof\csaudiointcsof.cat;%ROOT_DIR%x64\Release\CrosAudioTest.exe;%ROOT_DIR%x64\Release\csaudioendpointswitcher.exe"
     if !ERRORLEVEL! neq 0 (
         echo [ERROR] Driver package signing failed.
         set "BUILD_RESULT=1"
