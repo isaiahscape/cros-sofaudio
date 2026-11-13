@@ -934,6 +934,7 @@ static NTSTATUS NauDetectHeadsetMic(
     NAU_UPD(NAUL_SAR_CTRL, NAUL_SAR_ADC_EN, NAUL_SAR_ADC_EN);
     NAU_UPD(NAUL_ENA_CTRL, NAUL_ENABLE_ADC, NAUL_ENABLE_ADC);
     NAU_WR(NAUL_INTERRUPT_DIS_CTRL, 0x0000);
+    NAU_UPD(NAUL_INTERRUPT_MASK, NAUL_HEADSET_COMPLETE_IRQ, 0);
 
     /* One generated frame-sync edge starts the automatic detector even when
      * SSP0 has not begun streaming yet. */
@@ -1001,6 +1002,9 @@ static NTSTATUS NauDetectHeadsetMic(
         (void)I2cWriteRegister16(DevCtx->SpbTarget,
                                  NAUL_INT_CLR_KEY_STATUS,
                                  NAUL_HEADSET_COMPLETE_IRQ);
+    NAU_UPD(NAUL_INTERRUPT_MASK,
+            NAUL_HEADSET_COMPLETE_IRQ,
+            NAUL_HEADSET_COMPLETE_IRQ);
     return STATUS_SUCCESS;
 }
 
