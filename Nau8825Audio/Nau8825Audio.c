@@ -391,9 +391,10 @@ Nau8825_EvtD0Entry(
         return STATUS_SUCCESS;
     }
 
-    /* Keep the GPIO interpretation and the codec's automatic detector on the
-     * same polarity. Volmar's Windows firmware exposes high = inserted. */
-    devCtx->JackActiveLow = NauReadConfigDword(L"JackActiveLow", 0) ? TRUE : FALSE;
+    /* Keep polling and the codec's automatic detector on the same polarity.
+     * Volmar's coreboot property is active-low; the live GPIO is high while
+     * unplugged and low while a plug is inserted. */
+    devCtx->JackActiveLow = NauReadConfigDword(L"JackActiveLow", 1) ? TRUE : FALSE;
 
     status = Nau8825_InitializeHardware(devCtx);
     if (!NT_SUCCESS(status)) {
@@ -541,11 +542,10 @@ static VOID NauSleepMs(_In_ ULONG Ms)
 
 /*
  * Jack pin level: I2C_DEVICE_ID.GPIO2JD1 (what Linux nau8825_is_jack_inserted()
- * reads). On volmar the pin reads HIGH with a plug inserted (seen in the
- * 18.2.0.3 logs: 0x1a14 at boot without plug, 0x1a94 while playing to
- * headphones), so "high = inserted" is the default; the registry value
- * HKLM\SOFTWARE\CrosSofAudio\JackActiveLow = 1 flips it for boards
- * wired the other way.
+ * reads). Volmar declares JKDET active-low in coreboot and the live register
+ * reads confirm GPIO2JD1 is high while unplugged and low while inserted.
+ * HKLM\SOFTWARE\CrosSofAudio\JackActiveLow = 0 supports boards wired with
+ * the opposite polarity.
  */
 static BOOLEAN NauJackRead(_In_ PNAU8825_DEVICE_CONTEXT DevCtx, _Out_ BOOLEAN* Inserted, _Out_opt_ UINT16* Raw)
 {
@@ -922,6 +922,11 @@ static NTSTATUS NauDetectHeadsetMic(
     status = NauSysclkIdle(DevCtx);
     if (!NT_SUCCESS(status)) return status;
 
+    /* Linux temporarily removes the /96 power-saving divider while the HSD
+     * state machine is classifying the plug. The faster internal clock makes
+     * the Mic/GND charge and discharge sequence complete reliably. */
+    NAU_UPD(NAUL_CLK_DIVIDER, NAUL_CLK_MCLK_SRC_MASK, 0);
+
     (void)I2cWriteRegister16(DevCtx->SpbTarget, NAUL_INT_CLR_KEY_STATUS, 0xFFFF);
     NAU_UPD(NAUL_HSD_CTRL,
             NAUL_HSD_AUTO_MODE | NAUL_HSD_HPL_GND | NAUL_HSD_HPR_GND,
@@ -997,6 +1002,9 @@ static NTSTATUS NauDetectHeadsetMic(
         status = NauDisableHeadsetMic(DevCtx);
         if (!NT_SUCCESS(status)) return status;
     }
+
+    /* Return the internal clock to its low-power divider after detection. */
+    NAU_UPD(NAUL_CLK_DIVIDER, NAUL_CLK_MCLK_SRC_MASK, 0xF);
 
     if (complete)
         (void)I2cWriteRegister16(DevCtx->SpbTarget,

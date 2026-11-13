@@ -200,6 +200,75 @@ function Install-Inf($rel) {
     }
 }
 
+function Remove-SupersededDriverPackages([string[]]$originalNames) {
+    # pnputil intentionally keeps older packages in Driver Store. Restrict
+    # cleanup to this project's original INF names and providers, retain the
+    # newest package for each INF, and remove only the superseded oem*.inf
+    # packages after the replacement drivers have been installed.
+    $projectProviders = @(
+        'The Scape Network',
+        'Chromebook Audio Open Source Project',
+        'CoolStar'
+    )
+
+    try {
+        $activeInfs = @(
+            Get-CimInstance Win32_PnPSignedDriver -ErrorAction Stop |
+                Where-Object { $_.InfName -match '^oem\d+\.inf$' } |
+                ForEach-Object { $_.InfName.ToLowerInvariant() } |
+                Sort-Object -Unique
+        )
+        $storePackages = @(Get-WindowsDriver -Online -All -ErrorAction Stop)
+    } catch {
+        Write-Warning "Could not enumerate Driver Store for old-package cleanup: $($_.Exception.Message)"
+        return
+    }
+
+    foreach ($originalName in $originalNames) {
+        $wantedName = $originalName.ToLowerInvariant()
+        $packages = @(
+            $storePackages | Where-Object {
+                $original = [IO.Path]::GetFileName([string]$_.OriginalFileName).ToLowerInvariant()
+                $version = try { [version]$_.Version } catch { [version]'0.0.0.0' }
+                $original -eq $wantedName -and
+                    $projectProviders -contains $_.ProviderName -and
+                    $version.Major -eq 18
+            }
+        )
+        if ($packages.Count -le 1) { continue }
+
+        # Driver version and date decide package rank. For an exact tie, retain
+        # the package currently selected by PnP, then the newest OEM number.
+        $ordered = @(
+            $packages | Sort-Object `
+                @{ Expression = { try { [version]$_.Version } catch { [version]'0.0.0.0' } }; Descending = $true }, `
+                @{ Expression = { $_.Date }; Descending = $true }, `
+                @{ Expression = { $activeInfs -contains ([string]$_.Driver).ToLowerInvariant() }; Descending = $true }, `
+                @{ Expression = { if ($_.Driver -match '^oem(\d+)\.inf$') { [int]$Matches[1] } else { -1 } }; Descending = $true }
+        )
+        $keep = $ordered[0]
+        Write-Host "  Keeping $($keep.Driver) for $originalName (version $($keep.Version))."
+
+        foreach ($old in ($ordered | Select-Object -Skip 1)) {
+            $publishedName = ([string]$old.Driver).ToLowerInvariant()
+            if ($publishedName -notmatch '^oem\d+\.inf$') {
+                Write-Warning "Skipping unexpected published driver name '$publishedName'."
+                continue
+            }
+
+            Write-Host "  Removing superseded $publishedName (version $($old.Version))..."
+            $deleteOutput = & pnputil.exe /delete-driver $publishedName /uninstall /force 2>&1
+            $deleteCode = $LASTEXITCODE
+            if ($deleteCode -ne 0 -and $deleteCode -ne 3010) {
+                $deleteOutput | Out-Host
+                Write-Warning "Could not remove $publishedName (code $deleteCode); Windows may still be using it until reboot."
+            }
+        }
+    }
+
+    pnputil.exe /scan-devices | Out-Null
+}
+
 # ------------------------------------------------------------------ bus driver
 Step 'Intel audio bus driver'
 $child = $present | Where-Object { $_.InstanceId -like 'CSAUDIO\ADSP*' }
@@ -219,14 +288,22 @@ foreach ($k in 'DspBoot', 'DspIpc', 'DspDiag', 'Codec', 'AmpLeft', 'AmpRight', '
     if (Test-Path "$regRoot\$k") { Remove-Item "$regRoot\$k" -Recurse -Force }
 }
 reg add HKLM\SOFTWARE\CrosSofAudio\DspBoot /f | Out-Null
-# Volmar reports an inserted jack as GPIO high. Keep approximately 80% speaker
+# Volmar's JKDET signal is active-low. Keep approximately 80% speaker
 # amplitude (-2 dB) and match the hardware limiter to that headroom.
-Set-ItemProperty -Path $regRoot -Name 'JackActiveLow' -Value 0 -Type DWord
+Set-ItemProperty -Path $regRoot -Name 'JackActiveLow' -Value 1 -Type DWord
 Set-ItemProperty -Path $regRoot -Name 'SpeakerDspAttenDb' -Value 2 -Type DWord
 Set-ItemProperty -Path $regRoot -Name 'SpeakerLimiterThresholdDb' -Value 2 -Type DWord
 Install-Inf 'Drivers\CsAudioIntcsof\csaudiointcsof.inf'
 Install-Inf 'Drivers\Nau8825Audio\Nau8825Audio.inf'
 Install-Inf 'Drivers\Max98373Audio\Max98373Audio.inf'
+
+Step 'Cleaning superseded driver packages'
+Remove-SupersededDriverPackages @(
+    'csaudiointcsof.inf',
+    'Nau8825Audio.inf',
+    'Max98373Audio.inf',
+    'sklhdaudbus.inf'
+)
 
 # ------------------------------------------------------------------ switcher service
 Step 'Headphone / speaker auto-switcher'

@@ -14,7 +14,9 @@ Install
   2. Reboot.
   The installer verifies every driver signature, disables the Microsoft
   Vulnerable Driver Blocklist for these test-signed drivers, and enables Test
-  Mode with permission. These policy changes require the reboot in step 2.
+  Mode with permission. After installing an update, it removes superseded
+  cros-sofaudio oem*.inf packages from Driver Store while retaining the newest
+  package for each driver. These policy changes require the reboot in step 2.
   Windows then shows "Speakers" and "Headphones". The auto-switcher moves
   playback to Headphones when you plug in and back to Speakers when you
   unplug.
@@ -44,9 +46,10 @@ Volume tuning (registry, HKLM\SOFTWARE\CrosSofAudio, DWORD; reboot after)
   so this release does not apply unverified speaker-specific EQ coefficients.
 
 Jack detection
-  Default JackActiveLow is 0. If a different board reports the opposite GPIO
-  polarity (plugging in switches to Speakers instead of Headphones), set:
-    reg add HKLM\SOFTWARE\CrosSofAudio /v JackActiveLow /t REG_DWORD /d 1 /f
+  Default JackActiveLow is 1 for volmar. If a different board reports the
+  opposite GPIO polarity (plugging in switches to Speakers instead of
+  Headphones), set:
+    reg add HKLM\SOFTWARE\CrosSofAudio /v JackActiveLow /t REG_DWORD /d 0 /f
   and reboot.
 
 Problems

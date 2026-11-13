@@ -60,7 +60,7 @@ typedef struct _NAU8825_DEVICE_CONTEXT {
     WDFWAITLOCK             JackLock;
     BOOLEAN                 JackKnown;        /* first reading done */
     volatile BOOLEAN        JackPollStop;     /* set in D0Exit before stopping the timer */
-    BOOLEAN                 JackActiveLow;    /* Config\JackActiveLow (default 0: pin high = plugged) */
+    BOOLEAN                 JackActiveLow;    /* Config\JackActiveLow (default 1 on volmar) */
     UINT8                   JackCandidate;    /* debounce: 0/1 = pending new state, 0xFF = none */
     ULONG                   JackChanges;
 
