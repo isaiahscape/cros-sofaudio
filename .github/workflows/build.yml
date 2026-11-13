@@ -30,6 +30,7 @@ jobs:
     env:
       WINDOWS_TARGET_PLATFORM_VERSION: 10.0.26100.0
       MSBUILDDISABLENODEREUSE: 1
+      CSAUDIO_SIGNATURE_POWERSHELL: 'C:\Program Files\PowerShell\7\pwsh.exe'
 
     steps:
       - name: Check out source

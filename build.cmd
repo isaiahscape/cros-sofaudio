@@ -128,7 +128,9 @@ if %BUILD_EXIT% equ 0 (
         goto :BuildDone
     )
 
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\Test-DriverSignatures.ps1" ^
+    set "SIGNATURE_VERIFY_POWERSHELL=powershell.exe"
+    if defined CSAUDIO_SIGNATURE_POWERSHELL set "SIGNATURE_VERIFY_POWERSHELL=!CSAUDIO_SIGNATURE_POWERSHELL!"
+    "!SIGNATURE_VERIFY_POWERSHELL!" -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%build-tools\Test-DriverSignatures.ps1" ^
         -CertificatePath "%ROOT_DIR%x64\Release\ChromebookAudio.cer" ^
         -Paths "%ROOT_DIR%x64\Release\Max98373Audio\Max98373Audio.sys;%ROOT_DIR%x64\Release\Max98373Audio\max98373audio.cat;%ROOT_DIR%x64\Release\Nau8825Audio\Nau8825Audio.sys;%ROOT_DIR%x64\Release\Nau8825Audio\nau8825audio.cat;%ROOT_DIR%x64\Release\SklHdaudBus\SklHdaudBus.sys;%ROOT_DIR%x64\Release\SklHdaudBus\sklhdaudbus.cat;%ROOT_DIR%x64\Release\CsAudioIntcsof\CsAudioIntcsof.sys;%ROOT_DIR%x64\Release\CsAudioIntcsof\csaudiointcsof.cat;%ROOT_DIR%x64\Release\CrosAudioTest.exe;%ROOT_DIR%x64\Release\csaudioendpointswitcher.exe"
     if !ERRORLEVEL! neq 0 (

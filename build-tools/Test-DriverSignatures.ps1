@@ -10,6 +10,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
+Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
 
 function Normalize-Thumbprint([string]$Value) {
     if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
