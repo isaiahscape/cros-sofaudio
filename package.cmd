@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 
 set "ROOT_DIR=%~dp0"
-set "VERSION=v1.2.1"
+set "VERSION=v1.2.2"
 if not "%~1"=="" set "VERSION=%~1"
 
 set "DIST_DIR=%ROOT_DIR%dist\cros-sofaudio-%VERSION%"

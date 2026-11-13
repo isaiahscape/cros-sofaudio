@@ -8,6 +8,11 @@
 * **Maxim Integrated MAX98373** Class-D Smart Power Amplifiers (internal stereo speakers)
 * **Nuvoton NAU88L25** High-Performance Audio Codec (3.5mm headphone jack, TRRS headset microphone, and hardware jack detection)
 
+The internal microphone array does **not** use the NAU88L25. Volmar routes its
+two PDM microphones directly into the Intel audio DSP's `DMIC0` interface
+(`mic-tplg="_2ch_pdm0"`); only the analog headset microphone passes through the
+NAU88L25 on `SSP0.IN`.
+
 > [!IMPORTANT]
 > **Mandatory Requirements:**
 > * **Disable Vulnerable Driver Blocklist (`regedit`):** The installer now configures this automatically after it verifies every package signature. For manual installation, configure:
