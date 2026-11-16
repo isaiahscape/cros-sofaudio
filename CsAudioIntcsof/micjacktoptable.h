@@ -94,7 +94,9 @@ KSJACK_DESCRIPTION MicJackDesc =
     eGeoLocRight,
     eGenLocPrimaryBox,
     ePortConnJack,
-    FALSE               // NOTE: For convenience, wired headset jacks will be "unplugged" at boot.
+    TRUE                // No KS presence-detect capability is advertised, so this must
+                        // stay TRUE. CsAudioEndpointSwitcher controls physical availability
+                        // by hiding this endpoint unless a 4-pole headset is detected.
 };
 
 //=============================================================================

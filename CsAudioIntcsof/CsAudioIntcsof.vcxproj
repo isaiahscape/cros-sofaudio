@@ -130,7 +130,7 @@
   </ItemGroup>
   <ItemGroup>
     <Inf Include="csaudiointcsof.inf">
-      <TimeStamp>18.3.1.0</TimeStamp>
+      <TimeStamp>18.3.3.0</TimeStamp>
     </Inf>
   </ItemGroup>
   <ItemGroup>
