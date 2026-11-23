@@ -22,6 +22,9 @@ NTSTATUS ResetHDAController(PFDO_CONTEXT fdoCtx, BOOLEAN wakeup) {
 
 	//Reset the controller for at least 100 us
 	gctl = hda_read32(fdoCtx, GCTL);
+	if (gctl == 0xFFFFFFFF) {
+		return STATUS_DEVICE_DOES_NOT_EXIST;
+	}
 	hda_write32(fdoCtx, GCTL, gctl & ~HDA_GCTL_RESET);
 
 	for (int count = 0; count < 1000; count++) {

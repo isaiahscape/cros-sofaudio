@@ -58,6 +58,7 @@ typedef struct _NAU8825_DEVICE_CONTEXT {
     /* Jack polling (I2C_DEVICE_ID.GPIO2JD1 every NAU_JACK_POLL_MS) */
     WDFTIMER                JackTimer;
     WDFWAITLOCK             JackLock;
+    WDFWAITLOCK             StateLock;        /* serializes playback/capture/D0Exit I2C */
     BOOLEAN                 JackKnown;        /* first reading done */
     volatile BOOLEAN        JackPollStop;     /* set in D0Exit before stopping the timer */
     BOOLEAN                 JackActiveLow;    /* Config\JackActiveLow (default 1 on volmar) */

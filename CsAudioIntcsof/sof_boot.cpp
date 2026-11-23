@@ -303,24 +303,68 @@ static BOOLEAN SofCoreRun(_In_ PUCHAR dsp)
 }
 
 /* =========================================================================
- * Contiguous DMA buffer + BDL helpers
+ * Page-backed DMA buffer (below 4 GiB) + BDL helpers
  * ========================================================================= */
 
-static PVOID SofAllocDma(_In_ SIZE_T size)
+C_ASSERT(SOF_BDL_CHUNK == PAGE_SIZE);
+
+typedef struct _SOF_DMA_PAGES {
+    PMDL  mdl;
+    PVOID va;
+    ULONG size;
+} SOF_DMA_PAGES;
+
+static NTSTATUS SofAllocDmaPages(_In_ SIZE_T size, _Out_ SOF_DMA_PAGES* dma)
 {
     PHYSICAL_ADDRESS low, high, skip;
+    SIZE_T allocSize = ROUND_TO_PAGES(size);
+
+    RtlZeroMemory(dma, sizeof(*dma));
     low.QuadPart = 0;
     high.QuadPart = 0xFFFFFFFF;     /* keep below 4 GiB like the bus driver does */
     skip.QuadPart = 0;
-    return MmAllocateContiguousMemorySpecifyCache(size, low, high, skip, MmCached);
+
+    PMDL mdl = MmAllocatePagesForMdl(low, high, skip, allocSize);
+    if (!mdl) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    if (MmGetMdlByteCount(mdl) < allocSize) {
+        MmFreePagesFromMdl(mdl);
+        IoFreeMdl(mdl);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    PVOID va = MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmCached, NULL, FALSE, NormalPagePriority);
+    if (!va) {
+        MmFreePagesFromMdl(mdl);
+        IoFreeMdl(mdl);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    dma->mdl = mdl;
+    dma->va = va;
+    dma->size = (ULONG)allocSize;
+    return STATUS_SUCCESS;
 }
 
-/* Fills 'entries' BDL entries of SOF_BDL_CHUNK bytes covering a
- * physically contiguous buffer. Returns the number of entries used. */
-static int SofFillBdl(_In_ PVOID bdlBuf, _In_ PVOID buffer, _In_ ULONG size)
+static void SofFreeDmaPages(_Inout_ SOF_DMA_PAGES* dma)
+{
+    if (dma->va && dma->mdl) {
+        MmUnmapLockedPages(dma->va, dma->mdl);
+    }
+    if (dma->mdl) {
+        MmFreePagesFromMdl(dma->mdl);
+        IoFreeMdl(dma->mdl);
+    }
+    RtlZeroMemory(dma, sizeof(*dma));
+}
+
+/* Fills 'entries' BDL entries of SOF_BDL_CHUNK bytes from an MDL's page list. */
+static int SofFillBdlFromMdl(_In_ PVOID bdlBuf, _In_ PMDL mdl, _In_ ULONG size)
 {
     PHDAC_BDLENTRY bdl = (PHDAC_BDLENTRY)bdlBuf;
-    PHYSICAL_ADDRESS base = MmGetPhysicalAddress(buffer);
+    PPFN_NUMBER pfnArray = MmGetMdlPfnArray(mdl);
     ULONG offset = 0;
     int i = 0;
 
@@ -328,7 +372,7 @@ static int SofFillBdl(_In_ PVOID bdlBuf, _In_ PVOID buffer, _In_ ULONG size)
         ULONG chunk = size - offset;
         if (chunk > SOF_BDL_CHUNK) chunk = SOF_BDL_CHUNK;
 
-        ULONGLONG addr = (ULONGLONG)base.QuadPart + offset;
+        ULONGLONG addr = ((ULONGLONG)pfnArray[i] << PAGE_SHIFT);
         bdl[i].lowAddr = (UINT32)(addr & 0xFFFFFFFF);
         bdl[i].highAddr = (UINT32)(addr >> 32);
         bdl[i].len = chunk;
@@ -339,6 +383,15 @@ static int SofFillBdl(_In_ PVOID bdlBuf, _In_ PVOID buffer, _In_ ULONG size)
     }
     KeMemoryBarrier();
     return i;
+}
+
+void CCsAudioSofHW::sof_free_fw_cache()
+{
+    if (m_fwFile) {
+        ExFreePoolWithTag(m_fwFile, SOF_POOLTAG);
+        m_fwFile = NULL;
+    }
+    m_fwFileSize = 0;
 }
 
 /* =========================================================================
@@ -363,13 +416,11 @@ NTSTATUS CCsAudioSofHW::sof_boot_dsp()
     PUCHAR hda = m_hdaBar.Base.baseptr;
     PUCHAR ppcap = (PUCHAR)m_ppcap;
 
-    PUCHAR fwFile = NULL;
-    ULONG fwFileSize = 0;
     PUCHAR payload = NULL;
     ULONG payloadSize = 0;
 
-    PVOID clBuf = NULL;
-    PVOID iccBuf = NULL;
+    SOF_DMA_PAGES clDma = { 0 };
+    SOF_DMA_PAGES iccDma = { 0 };
     HANDLE clStream = NULL;
     HANDLE iccStream = NULL;
     UINT8 clTag = 0;
@@ -382,7 +433,9 @@ NTSTATUS CCsAudioSofHW::sof_boot_dsp()
     UINT32 last = 0;
     int attempt;
 
-    PAGED_CODE();
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
 
     if (m_dspBooted) {
         return STATUS_SUCCESS;
@@ -421,33 +474,34 @@ NTSTATUS CCsAudioSofHW::sof_boot_dsp()
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
 
-    /* ---- 1. Load firmware image ------------------------------------ */
+    /* ---- 1. Load & cache firmware image ---------------------------- */
     sof_log_stage(SofStageLoadFile, STATUS_PENDING);
-    status = SofLoadFile(SOF_FW_PATH_ADL, &fwFile, &fwFileSize);
-    if (!NT_SUCCESS(status)) {
-        SofLogString(L"Result", L"failed: cannot read System32\\drivers\\sof-adl.ri");
-        sof_log_stage(SofStageLoadFile, status);
-        goto cleanup;
+    if (!m_fwFile || m_fwFileSize == 0) {
+        status = SofLoadFile(SOF_FW_PATH_ADL, &m_fwFile, &m_fwFileSize);
+        if (!NT_SUCCESS(status)) {
+            SofLogString(L"Result", L"failed: cannot read System32\\drivers\\sof-adl.ri");
+            sof_log_stage(SofStageLoadFile, status);
+            goto cleanup;
+        }
+        /* IPC mailbox windows come from the firmware's extended manifest */
+        sof_parse_windows(m_fwFile, m_fwFileSize);
     }
 
-    /* IPC mailbox windows come from the firmware's extended manifest */
-    sof_parse_windows(fwFile, fwFileSize);
-
     {
-        const SOF_EXT_MAN_HEADER* hdr = (const SOF_EXT_MAN_HEADER*)fwFile;
+        const SOF_EXT_MAN_HEADER* hdr = (const SOF_EXT_MAN_HEADER*)m_fwFile;
         ULONG payloadOffset = 0;
         if (hdr->magic == SOF_EXT_MAN_MAGIC_NUMBER) {
             payloadOffset = hdr->full_size;
         }
-        if (payloadOffset >= fwFileSize) {
+        if (payloadOffset >= m_fwFileSize) {
             status = STATUS_INVALID_IMAGE_FORMAT;
             SofLogString(L"Result", L"failed: bad extended manifest in sof-adl.ri");
             sof_log_stage(SofStageLoadFile, status);
             goto cleanup;
         }
-        payload = fwFile + payloadOffset;
-        payloadSize = fwFileSize - payloadOffset;
-        SofLogDword(L"FwFileSize", fwFileSize);
+        payload = m_fwFile + payloadOffset;
+        payloadSize = m_fwFileSize - payloadOffset;
+        SofLogDword(L"FwFileSize", m_fwFileSize);
         SofLogDword(L"FwPayloadOffset", payloadOffset);
     }
 
@@ -461,17 +515,18 @@ NTSTATUS CCsAudioSofHW::sof_boot_dsp()
     /* ---- 2. DMA buffers and streams -------------------------------- */
     sof_log_stage(SofStagePrepareStreams, STATUS_PENDING);
 
-    clBuf = SofAllocDma(ROUND_TO_PAGES(payloadSize));
-    iccBuf = SofAllocDma(PAGE_SIZE);
-    if (!clBuf || !iccBuf) {
-        status = STATUS_INSUFFICIENT_RESOURCES;
+    status = SofAllocDmaPages(payloadSize, &clDma);
+    if (NT_SUCCESS(status)) {
+        status = SofAllocDmaPages(PAGE_SIZE, &iccDma);
+    }
+    if (!NT_SUCCESS(status)) {
         SofLogString(L"Result", L"failed: DMA buffer allocation");
         sof_log_stage(SofStagePrepareStreams, status);
         goto cleanup;
     }
-    RtlZeroMemory(clBuf, ROUND_TO_PAGES(payloadSize));
-    RtlCopyMemory(clBuf, payload, payloadSize);
-    RtlZeroMemory(iccBuf, PAGE_SIZE);
+    RtlZeroMemory(clDma.va, clDma.size);
+    RtlCopyMemory(clDma.va, payload, payloadSize);
+    RtlZeroMemory(iccDma.va, iccDma.size);
     KeMemoryBarrier();
 
     /* Enable DSP processing pipes (GPROCEN). IPC/PP interrupts stay OFF:
@@ -480,7 +535,9 @@ NTSTATUS CCsAudioSofHW::sof_boot_dsp()
     SofUpdate32(ppcap, SOF_HDA_REG_PP_PPCTL, SOF_HDA_PPCTL_GPROCEN, SOF_HDA_PPCTL_GPROCEN);
     m_gprocenOn = TRUE;
 
-    /* Make sure core 0 starts from a clean, powered-off state. */
+    /* Make sure core 0 starts from a clean, powered-off state with IPC IRQs masked. */
+    SofWrite32(dsp, SOF_DSP_REG_ADSPIC, 0);
+    SofWrite32(dsp, SOF_CNL_HIPCCTL, 0);
     if (SofRead32(dsp, SOF_DSP_REG_ADSPCS) & SOF_ADSPCS_CPA(SOF_CORE0)) {
         SofCoreResetPowerDown(dsp);
     }
@@ -510,7 +567,7 @@ NTSTATUS CCsAudioSofHW::sof_boot_dsp()
             sof_log_stage(SofStagePrepareStreams, status);
             goto cleanup;
         }
-        SofFillBdl(iccBdl, iccBuf, PAGE_SIZE);
+        SofFillBdlFromMdl(iccBdl, iccDma.mdl, PAGE_SIZE);
 
         /* Code loader playback stream */
         status = m_BusInterface.GetRenderStream(m_BusInterface.Context, fmt, &clStream, &clTag);
@@ -530,7 +587,7 @@ NTSTATUS CCsAudioSofHW::sof_boot_dsp()
             sof_log_stage(SofStagePrepareStreams, status);
             goto cleanup;
         }
-        SofFillBdl(clBdl, clBuf, payloadSize);
+        SofFillBdlFromMdl(clBdl, clDma.mdl, payloadSize);
 
         if (m_BusInterface.DSPEnableSPIB) {
             m_BusInterface.DSPEnableSPIB(m_BusInterface.Context, clStream, payloadSize);
@@ -642,10 +699,9 @@ cleanup:
             (SofRead8(hda, SOF_HDA_VS_INTEL_LTRP) & ~SOF_HDA_VS_INTEL_LTRP_GB_MASK) | ltrpOriginal);
     }
 
-    /* DMA is stopped now; buffers can go. */
-    if (clBuf) MmFreeContiguousMemory(clBuf);
-    if (iccBuf) MmFreeContiguousMemory(iccBuf);
-    if (fwFile) ExFreePoolWithTag(fwFile, SOF_POOLTAG);
+    /* DMA is stopped now; buffers can go (firmware stays cached for D3->D0/S4 resume). */
+    SofFreeDmaPages(&clDma);
+    SofFreeDmaPages(&iccDma);
 
     if (!NT_SUCCESS(status)) {
         if (dsp && m_bootStage >= SofStageCorePowerUp) {
@@ -664,6 +720,14 @@ cleanup:
         /* Milestone 2: build the headset playback pipeline. A failure here is
          * logged (DspIpc key) but leaves the DSP running. */
         (void)sof_setup_pipelines();
+    } else {
+        if (dsp) {
+            SofCoreResetPowerDown(dsp);
+        }
+        if (ppcap && m_gprocenOn && !m_gprocenWasSet) {
+            SofUpdate32(ppcap, SOF_HDA_REG_PP_PPCTL, SOF_HDA_PPCTL_GPROCEN, 0);
+            m_gprocenOn = FALSE;
+        }
     }
     return status;
 }
@@ -679,14 +743,12 @@ NTSTATUS CCsAudioSofHW::sof_wait_fw_ready()
         SOF_FW_READY_TIMEOUT_US, &hipctdr)) {
         SofLogString(L"Result", L"failed: firmware entered but never sent FW_READY");
         sof_log_stage(SofStageFwReady, STATUS_IO_TIMEOUT);
-        m_dspBooted = TRUE;     /* core is running; power it down on deinit */
         return STATUS_IO_TIMEOUT;
     }
 
     if ((hipctdr & SOF_IPC_PANIC_MAGIC_MASK) == SOF_IPC_PANIC_MAGIC) {
         SofLogString(L"Result", L"failed: firmware PANIC during boot (see HIPCTDR/HIPCTDD)");
         sof_log_stage(SofStageFwReady, STATUS_DEVICE_HARDWARE_ERROR);
-        m_dspBooted = TRUE;
         return STATUS_DEVICE_HARDWARE_ERROR;
     }
 

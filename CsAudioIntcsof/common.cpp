@@ -418,7 +418,6 @@ Return Value:
 
     if (m_pHW)
     {
-        m_pHW->sof_deinit();
         delete m_pHW;
         m_pHW = NULL;
     }
@@ -1233,7 +1232,6 @@ Note:
                 break;
             case PowerDeviceD1:
             case PowerDeviceD2:
-                break;
             case PowerDeviceD3:
                 m_pHW->sof_deinit();
                 break;

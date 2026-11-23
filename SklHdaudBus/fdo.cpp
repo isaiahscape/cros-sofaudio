@@ -586,10 +586,23 @@ Fdo_EvtDeviceD0Entry(
         update_pci_byte(&fdoCtx->BusInterface, NVIDIA_HDA_OSTRM_COH, 0x01, NVIDIA_HDA_ENABLE_COHBIT);
     }
 
-    //Reset CORB / RIRB
+    //Reset CORB / RIRB and pre-initialize transfer events before interrupts start
     RtlZeroMemory(&fdoCtx->corb, sizeof(fdoCtx->corb));
     RtlZeroMemory(&fdoCtx->rirb, sizeof(fdoCtx->rirb));
+    for (UINT8 addr = 0; addr < HDA_MAX_CODECS; addr++) {
+        KeInitializeEvent(&fdoCtx->rirb.xferEvent[addr], NotificationEvent, FALSE);
+    }
     fdoCtx->processRirb = FALSE;
+
+    if (fdoCtx->posbuf) {
+        RtlZeroMemory(fdoCtx->posbuf, PAGE_SIZE);
+    }
+    if (fdoCtx->streams) {
+        for (UINT32 i = 0; i < fdoCtx->numStreams; i++) {
+            fdoCtx->streams[i].running = FALSE;
+            fdoCtx->streams[i].irqReceived = FALSE;
+        }
+    }
 
     status = StartHDAController(fdoCtx);
 
@@ -667,12 +680,23 @@ Fdo_EvtDeviceD0Exit(
 
     fdoCtx = Fdo_GetContext(Device);
 
+    if (fdoCtx->venId == VEN_INTEL) {
+        UINT32 val;
+        pci_read_cfg_dword(&fdoCtx->BusInterface, INTEL_HDA_CGCTL, &val);
+        val = val & ~INTEL_HDA_CGCTL_MISCBDCGE;
+        pci_write_cfg_dword(&fdoCtx->BusInterface, INTEL_HDA_CGCTL, val);
+    }
+
     status = StopHDAController(fdoCtx);
+    if (!NT_SUCCESS(status)) {
+        SklHdAudBusPrint(DEBUG_LEVEL_ERROR, DBG_INIT,
+            "%s: StopHDAController returned 0x%x (continuing D0 exit)\n", __func__, status);
+    }
 
     SklHdAudBusPrint(DEBUG_LEVEL_INFO, DBG_INIT,
         "%s\n", __func__);
 
-    return status;
+    return STATUS_SUCCESS;
 }
 
 void

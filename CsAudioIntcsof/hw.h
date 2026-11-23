@@ -106,6 +106,9 @@ protected:
     PDEVICE_OBJECT              m_pDeviceObject;
 
     // SOF firmware boot state (sof_boot.cpp)
+    PUCHAR                      m_fwFile;
+    ULONG                       m_fwFileSize;
+    BOOLEAN                     m_dspPowered;
     BOOLEAN                     m_dspBooted;
     BOOLEAN                     m_gprocenWasSet;
     BOOLEAN                     m_gprocenOn;
@@ -147,6 +150,7 @@ protected:
     void     sof_reset_pipeline_state();
     void     NotifyCodecs(_In_ CSAudioEndpointType endpointType, _In_ BOOLEAN start);
 
+    void     sof_free_fw_cache();
     BOOLEAN  sof_is_supported_platform();
     NTSTATUS sof_boot_dsp();
     NTSTATUS sof_wait_fw_ready();

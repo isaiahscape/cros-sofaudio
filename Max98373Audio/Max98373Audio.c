@@ -38,6 +38,7 @@
 static int CsAudioArg2 = 1;
 
 static VOID AmpLog(_In_ PMAX98373_DEVICE_CONTEXT DevCtx, _In_ PCWSTR Name, _In_ ULONG Value);
+static VOID AmpSleepMs(ULONG ms);
 
 /* =========================================================================
  * DriverEntry
@@ -143,6 +144,7 @@ Max98373_EvtDeviceAdd(
 
     /* Configure default parallel I/O queue for IOCTLs */
     WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchParallel);
+    queueConfig.PowerManaged = WdfFalse;
     queueConfig.EvtIoDeviceControl = Max98373_EvtIoDeviceControl;
 
     status = WdfIoQueueCreate(device, &queueConfig, WDF_NO_OBJECT_ATTRIBUTES, &devCtx->DefaultQueue);
@@ -636,6 +638,10 @@ Max98373_CsAudioCallbackFunction(
         return;
     }
 
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return;
+    }
+
     CsAudioArg localArg;
     RtlZeroMemory(&localArg, sizeof(CsAudioArg));
     RtlCopyMemory(&localArg, arg, min(arg->argSz, sizeof(CsAudioArg)));
@@ -651,6 +657,9 @@ Max98373_CsAudioCallbackFunction(
         }
     }
     else if (localArg.endpointRequest == CSAudioEndpointStart) {
+        if (!devCtx->PowerActive) {
+            return;
+        }
         if (!devCtx->CSAudioRequestsOn) {
             devCtx->CSAudioRequestsOn = TRUE;
             Max98373_SetStreamState(devCtx, TRUE);
@@ -670,7 +679,7 @@ Max98373_EvtD0Entry(
     )
 {
     PMAX98373_DEVICE_CONTEXT devCtx;
-    NTSTATUS status;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
     UINT8 revId = 0;
 
     UNREFERENCED_PARAMETER(PreviousState);
@@ -681,17 +690,28 @@ Max98373_EvtD0Entry(
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
         "Max98373Audio: EvtD0Entry (powering up)\n"));
 
-    devCtx->PowerActive = TRUE;
     devCtx->Streaming = FALSE;
+    devCtx->CSAudioRequestsOn = FALSE;
+    devCtx->Muted = FALSE;
+    devCtx->PowerActive = TRUE;
 
-    /* Verify device presence by reading RevID */
-    status = I2cReadRegister8(devCtx->SpbTarget, MAX98373_REVID_REG, &revId);
-    if (!NT_SUCCESS(status)) {
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-            "Max98373Audio: Failed to read revision ID 0x%08X\n", status));
-        devCtx->PowerActive = FALSE;
-        return status;
+    /* Retry briefly after S4/D3 resume in case the I2C bus is still settling.
+     * Never fail D0Entry on a transient I2C error; STREAM_START re-runs full init. */
+    for (int attempt = 0; attempt < 5; attempt++) {
+        status = I2cReadRegister8(devCtx->SpbTarget, MAX98373_REVID_REG, &revId);
+        if (NT_SUCCESS(status)) {
+            break;
+        }
+        AmpSleepMs(10);
     }
+
+    if (!NT_SUCCESS(status)) {
+        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
+            "Max98373Audio: EvtD0Entry RevID read returned 0x%08X (deferred init)\n", status));
+        AmpLog(devCtx, L"D0EntryRevIdStatus", (ULONG)status);
+        return STATUS_SUCCESS;
+    }
+
     devCtx->RevisionId = revId;
     AmpLog(devCtx, L"RevIdAtD0", revId);
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
@@ -727,6 +747,7 @@ Max98373_EvtD0Exit(
         "Max98373Audio: EvtD0Exit (powering down)\n"));
 
     devCtx->PowerActive = FALSE;
+    devCtx->CSAudioRequestsOn = FALSE;
     Max98373_SetStreamState(devCtx, FALSE);
 
     return STATUS_SUCCESS;
@@ -964,7 +985,9 @@ Max98373_SetStreamState(
 
     WdfWaitLockAcquire(DevCtx->StateLock, NULL);
     if (Start) {
-        if (!DevCtx->Streaming) {
+        if (!DevCtx->PowerActive) {
+            status = STATUS_DEVICE_POWERED_OFF;
+        } else if (!DevCtx->Streaming) {
             DevCtx->StartCount++;
             AmpLog(DevCtx, L"StartCount", DevCtx->StartCount);
             status = Max98373_InitializeHardware(DevCtx);
@@ -1067,6 +1090,10 @@ Max98373_EvtIoDeviceControl(
 
     case IOCTL_CSAUDIO_SET_VOLUME: {
         PCSAUDIO_VOLUME_PARAMS volParams;
+        if (!devCtx->PowerActive) {
+            status = STATUS_DEVICE_POWERED_OFF;
+            break;
+        }
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(CSAUDIO_VOLUME_PARAMS), (PVOID*)&volParams, NULL);
         if (NT_SUCCESS(status)) {
             status = Max98373_SetVolume(devCtx, volParams->VolumeDbLevel, volParams->Muted);
@@ -1076,6 +1103,10 @@ Max98373_EvtIoDeviceControl(
 
     case IOCTL_CSAUDIO_SET_MUTE: {
         PCSAUDIO_VOLUME_PARAMS volParams;
+        if (!devCtx->PowerActive) {
+            status = STATUS_DEVICE_POWERED_OFF;
+            break;
+        }
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(CSAUDIO_VOLUME_PARAMS), (PVOID*)&volParams, NULL);
         if (NT_SUCCESS(status)) {
             status = Max98373_SetVolume(devCtx, volParams->VolumeDbLevel, TRUE);
@@ -1089,6 +1120,11 @@ Max98373_EvtIoDeviceControl(
         PCSAUDIO_REG_IO regIoIn;
         PCSAUDIO_REG_IO regIoOut;
         UINT8 val8 = 0;
+
+        if (!devCtx->PowerActive) {
+            status = STATUS_DEVICE_POWERED_OFF;
+            break;
+        }
 
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(CSAUDIO_REG_IO), (PVOID*)&regIoIn, NULL);
         if (!NT_SUCCESS(status)) break;
@@ -1107,6 +1143,10 @@ Max98373_EvtIoDeviceControl(
 
     case IOCTL_CSAUDIO_WRITE_REG: {
         PCSAUDIO_REG_IO regIo;
+        if (!devCtx->PowerActive) {
+            status = STATUS_DEVICE_POWERED_OFF;
+            break;
+        }
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(CSAUDIO_REG_IO), (PVOID*)&regIo, NULL);
         if (NT_SUCCESS(status)) {
             status = I2cWriteRegister8(devCtx->SpbTarget, regIo->Register, (UINT8)(regIo->Value & 0xFF));

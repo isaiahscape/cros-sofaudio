@@ -228,8 +228,16 @@ static NTSTATUS SendIoctlToDeviceInterface(
             if (irp) {
                 status = IoCallDriver(targetDevice, irp);
                 if (status == STATUS_PENDING) {
-                    KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
-                    status = ioStatus.Status;
+                    LARGE_INTEGER timeout;
+                    timeout.QuadPart = -20000000LL; /* 2 seconds */
+                    NTSTATUS waitStatus = KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, &timeout);
+                    if (waitStatus == STATUS_TIMEOUT) {
+                        IoCancelIrp(irp);
+                        KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
+                        status = STATUS_IO_TIMEOUT;
+                    } else {
+                        status = ioStatus.Status;
+                    }
                 }
             } else {
                 status = STATUS_INSUFFICIENT_RESOURCES;

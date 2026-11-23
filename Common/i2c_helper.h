@@ -18,6 +18,20 @@
 
 
 /*
+ * I2cInitSendOptions - Bound all synchronous SPB I2C transfers so a sleeping
+ * or unresponsive I2C controller cannot stall a PnP/Power IRP indefinitely.
+ */
+FORCEINLINE
+VOID
+I2cInitSendOptions(
+    _Out_ PWDF_REQUEST_SEND_OPTIONS Options
+    )
+{
+    WDF_REQUEST_SEND_OPTIONS_INIT(Options, WDF_REQUEST_SEND_OPTION_TIMEOUT);
+    WDF_REQUEST_SEND_OPTIONS_SET_TIMEOUT(Options, WDF_REL_TIMEOUT_IN_MS(500));
+}
+
+/*
  * I2cWriteRegister8 - Write 8-bit value to a 16-bit register address
  *
  * Format on I2C bus: [RegAddr_MSB, RegAddr_LSB, Value]
@@ -34,19 +48,21 @@ I2cWriteRegister8(
     NTSTATUS status;
     UINT8 buffer[3];
     WDF_MEMORY_DESCRIPTOR memDesc;
+    WDF_REQUEST_SEND_OPTIONS sendOptions;
 
     buffer[0] = (UINT8)((Register >> 8) & 0xFF);
     buffer[1] = (UINT8)(Register & 0xFF);
     buffer[2] = Value;
 
     WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&memDesc, buffer, sizeof(buffer));
+    I2cInitSendOptions(&sendOptions);
 
     status = WdfIoTargetSendWriteSynchronously(
         SpbTarget,
         NULL,
         &memDesc,
         NULL,
-        NULL,
+        &sendOptions,
         NULL
     );
 
@@ -75,6 +91,7 @@ I2cReadRegister8(
 
     SPB_TRANSFER_LIST_AND_ENTRIES(2) sequence;
     WDF_MEMORY_DESCRIPTOR inputDesc;
+    WDF_REQUEST_SEND_OPTIONS sendOptions;
 
     if (!Value) return STATUS_INVALID_PARAMETER;
     *Value = 0;
@@ -101,6 +118,7 @@ I2cReadRegister8(
     );
 
     WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&inputDesc, &sequence, sizeof(sequence));
+    I2cInitSendOptions(&sendOptions);
 
     status = WdfIoTargetSendIoctlSynchronously(
         SpbTarget,
@@ -108,7 +126,7 @@ I2cReadRegister8(
         IOCTL_SPB_EXECUTE_SEQUENCE,
         &inputDesc,
         NULL,
-        NULL,
+        &sendOptions,
         NULL
     );
 
@@ -172,13 +190,14 @@ I2cWriteRegister16(
     buffer[3] = (UINT8)(Value & 0xFF);
 
     WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&memDesc, buffer, sizeof(buffer));
+    I2cInitSendOptions(&sendOptions);
 
     status = WdfIoTargetSendWriteSynchronously(
         SpbTarget,
         NULL,
         &memDesc,
         NULL,
-        NULL,
+        &sendOptions,
         NULL
     );
 
@@ -207,6 +226,7 @@ I2cReadRegister16(
 
     SPB_TRANSFER_LIST_AND_ENTRIES(2) sequence;
     WDF_MEMORY_DESCRIPTOR inputDesc;
+    WDF_REQUEST_SEND_OPTIONS sendOptions;
 
     if (!Value) return STATUS_INVALID_PARAMETER;
     *Value = 0;
@@ -233,6 +253,7 @@ I2cReadRegister16(
     );
 
     WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&inputDesc, &sequence, sizeof(sequence));
+    I2cInitSendOptions(&sendOptions);
 
     status = WdfIoTargetSendIoctlSynchronously(
         SpbTarget,
@@ -240,7 +261,7 @@ I2cReadRegister16(
         IOCTL_SPB_EXECUTE_SEQUENCE,
         &inputDesc,
         NULL,
-        NULL,
+        &sendOptions,
         NULL
     );
 

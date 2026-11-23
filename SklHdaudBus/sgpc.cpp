@@ -250,10 +250,14 @@ HDAGraphicsPowerInterfaceAdd(WDFWORKITEM WorkItem) {
     WDF_MEMORY_DESCRIPTOR outputDescriptor;
     WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&outputDescriptor, &ioTargetContext->graphicsPowerRegisterOutput, sizeof(ioTargetContext->graphicsPowerRegisterOutput));
 
+    WDF_REQUEST_SEND_OPTIONS sendOptions;
+    WDF_REQUEST_SEND_OPTIONS_INIT(&sendOptions, WDF_REQUEST_SEND_OPTION_TIMEOUT);
+    WDF_REQUEST_SEND_OPTIONS_SET_TIMEOUT(&sendOptions, WDF_REL_TIMEOUT_IN_MS(2000));
+
     status = WdfIoTargetSendInternalIoctlSynchronously(ioTarget,
         WDF_NO_HANDLE,
         IOCTL_INTERNAL_GRAPHICSPOWER_REGISTER,
-        &inputDescriptor, &outputDescriptor, NULL, NULL);
+        &inputDescriptor, &outputDescriptor, &sendOptions, NULL);
     if (!NT_SUCCESS(status)) {
         SklHdAudBusPrint(DEBUG_LEVEL_INFO, DBG_INIT,
             "IOCTL_INTERNAL_GRAPHICSPOWER_REGISTER failed with status 0x%x\n", status);
@@ -261,6 +265,10 @@ HDAGraphicsPowerInterfaceAdd(WDFWORKITEM WorkItem) {
     }
 
 exit:
+    if (graphicsDeviceSymlink->Buffer) {
+        ExFreePoolWithTag(graphicsDeviceSymlink->Buffer, SKLHDAUDBUS_POOL_TAG);
+        graphicsDeviceSymlink->Buffer = NULL;
+    }
     WdfObjectDelete(WorkItem);
 }
 
@@ -300,11 +308,23 @@ HDAGraphicsPowerInterfaceCallback(
         );
         attributes.ParentObject = fdoCtx->WdfDevice;
 
-        WdfWorkItemCreate(&workItemConfig, &attributes, &workItem);
+        status = WdfWorkItemCreate(&workItemConfig, &attributes, &workItem);
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
 
         PGRAPHICSWORKITEM_CONTEXT workItemContext = GraphicsWorkitem_GetContext(workItem);
         workItemContext->FdoContext = fdoCtx;
-        workItemContext->GPUDeviceSymlink = *devNotificationStruct->SymbolicLinkName;
+        USHORT len = devNotificationStruct->SymbolicLinkName->Length;
+        PWSTR copy = (PWSTR)ExAllocatePoolZero(NonPagedPoolNx, len + sizeof(WCHAR), SKLHDAUDBUS_POOL_TAG);
+        if (!copy) {
+            WdfObjectDelete(workItem);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        RtlCopyMemory(copy, devNotificationStruct->SymbolicLinkName->Buffer, len);
+        workItemContext->GPUDeviceSymlink.Buffer = copy;
+        workItemContext->GPUDeviceSymlink.Length = len;
+        workItemContext->GPUDeviceSymlink.MaximumLength = len + sizeof(WCHAR);
 
         WdfWorkItemEnqueue(workItem);
     }

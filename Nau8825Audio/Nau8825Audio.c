@@ -31,6 +31,7 @@
 #endif
 
 static ULONG NauReadConfigDword(_In_ PCWSTR Name, _In_ ULONG Default);
+static VOID NauSleepMs(_In_ ULONG Ms);
 
 /* =========================================================================
  * DriverEntry
@@ -122,8 +123,11 @@ Nau8825_EvtDeviceAdd(
         return status;
     }
 
-    /* Configure default parallel I/O queue for IOCTLs */
+    /* Configure default parallel I/O queue for IOCTLs.
+     * Keep PowerManaged = WdfFalse so sidecar IOCTLs from CsAudioIntcsof
+     * fail immediately during Dx transitions instead of stalling Power IRPs. */
     WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchParallel);
+    queueConfig.PowerManaged = WdfFalse;
     queueConfig.EvtIoDeviceControl = Nau8825_EvtIoDeviceControl;
 
     status = WdfIoQueueCreate(device, &queueConfig, WDF_NO_OBJECT_ATTRIBUTES, &devCtx->DefaultQueue);
@@ -145,6 +149,13 @@ Nau8825_EvtDeviceAdd(
             return status;
         }
 
+        WDF_OBJECT_ATTRIBUTES_INIT(&attr);
+        attr.ParentObject = device;
+        status = WdfWaitLockCreate(&attr, &devCtx->StateLock);
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
+
         /* one-shot, re-armed by the callback (passive-level timers are kept non-periodic) */
         WDF_TIMER_CONFIG_INIT(&timerConfig, Nau8825_EvtJackTimer);
         timerConfig.AutomaticSerialization = FALSE;
@@ -161,6 +172,7 @@ Nau8825_EvtDeviceAdd(
 
     /* Create dedicated manual queue to hold pending jack state change notifications */
     WDF_IO_QUEUE_CONFIG_INIT(&queueConfig, WdfIoQueueDispatchManual);
+    queueConfig.PowerManaged = WdfFalse;
     status = WdfIoQueueCreate(device, &queueConfig, WDF_NO_OBJECT_ATTRIBUTES, &devCtx->JackNotificationQueue);
     if (!NT_SUCCESS(status)) {
         KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
@@ -383,6 +395,10 @@ Nau8825_EvtD0Entry(
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
         "Nau8825Audio: EvtD0Entry (powering up)\n"));
 
+    devCtx->HwInitDone = FALSE;
+    devCtx->Streaming = FALSE;
+    devCtx->CaptureActive = FALSE;
+    devCtx->Muted = FALSE;
     devCtx->PowerActive = TRUE;
 
     if (!devCtx->SpbTarget) {
@@ -396,19 +412,29 @@ Nau8825_EvtD0Entry(
      * unplugged and low while a plug is inserted. */
     devCtx->JackActiveLow = NauReadConfigDword(L"JackActiveLow", 1) ? TRUE : FALSE;
 
-    status = Nau8825_InitializeHardware(devCtx);
+    status = STATUS_UNSUCCESSFUL;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        status = Nau8825_InitializeHardware(devCtx);
+        if (NT_SUCCESS(status)) {
+            break;
+        }
+        NauSleepMs(15);
+    }
+
     if (!NT_SUCCESS(status)) {
         KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
-            "Nau8825Audio: Nau8825_InitializeHardware returned 0x%08X (deferred initialization)\n", status));
-        return STATUS_SUCCESS;
+            "Nau8825Audio: Nau8825_InitializeHardware returned 0x%08X (deferred to timer/stream)\n", status));
     }
 
     /* Jack detection: polled (the old interrupt set-up used guessed register
-     * bits and is no longer enabled). First reading is applied immediately. */
+     * bits and is no longer enabled). Always arm the timer even if initial I2C
+     * failed after S4 resume so jack detection recovers automatically. */
     devCtx->JackKnown = FALSE;
     devCtx->JackCandidate = 0xFF;
-    Nau8825_ProcessJackStateChange(devCtx);
     devCtx->JackPollStop = FALSE;
+    if (NT_SUCCESS(status)) {
+        Nau8825_ProcessJackStateChange(devCtx);
+    }
     if (devCtx->JackTimer) {
         WdfTimerStart(devCtx->JackTimer, WDF_REL_TIMEOUT_IN_MS(NAU_JACK_POLL_MS));
     }
@@ -439,29 +465,43 @@ Nau8825_EvtD0Exit(
         "Nau8825Audio: EvtD0Exit (powering down)\n"));
 
     devCtx->JackPollStop = TRUE;
+    devCtx->PowerActive = FALSE;
     if (devCtx->JackTimer) {
         WdfTimerStop(devCtx->JackTimer, TRUE);
         WdfTimerStop(devCtx->JackTimer, TRUE);   /* in case the callback re-armed meanwhile */
     }
-    devCtx->PowerActive = FALSE;
 
-    /* Ramp down headphone volume smoothly */
-    status = Nau8825_SetVolume(devCtx, NAU8825_HP_VOL_MIN, TRUE);
-    if (!NT_SUCCESS(status)) {
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
-            "Nau8825Audio: EvtD0Exit - SetVolume failed 0x%08X\n", status));
+    if (devCtx->SpbTarget && devCtx->HwInitDone) {
+        /* Ramp down headphone volume smoothly */
+        status = Nau8825_SetVolume(devCtx, NAU8825_HP_VOL_MIN, TRUE);
+        if (!NT_SUCCESS(status)) {
+            KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
+                "Nau8825Audio: EvtD0Exit - SetVolume failed 0x%08X\n", status));
+        }
+
+        /* Power down DAC and ADC paths */
+        status = Nau8825_SetPlaybackState(devCtx, FALSE);
+        if (!NT_SUCCESS(status)) {
+            KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
+                "Nau8825Audio: EvtD0Exit - SetPlaybackState failed 0x%08X\n", status));
+        }
+        status = Nau8825_SetCaptureState(devCtx, FALSE);
+        if (!NT_SUCCESS(status)) {
+            KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
+                "Nau8825Audio: EvtD0Exit - SetCaptureState failed 0x%08X\n", status));
+        }
     }
 
-    /* Power down DAC and ADC paths */
-    status = Nau8825_SetPlaybackState(devCtx, FALSE);
-    if (!NT_SUCCESS(status)) {
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
-            "Nau8825Audio: EvtD0Exit - SetPlaybackState failed 0x%08X\n", status));
-    }
-    status = Nau8825_SetCaptureState(devCtx, FALSE);
-    if (!NT_SUCCESS(status)) {
-        KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
-            "Nau8825Audio: EvtD0Exit - SetCaptureState failed 0x%08X\n", status));
+    if (devCtx->StateLock) {
+        WdfWaitLockAcquire(devCtx->StateLock, NULL);
+        devCtx->HwInitDone = FALSE;
+        devCtx->Streaming = FALSE;
+        devCtx->CaptureActive = FALSE;
+        WdfWaitLockRelease(devCtx->StateLock);
+    } else {
+        devCtx->HwInitDone = FALSE;
+        devCtx->Streaming = FALSE;
+        devCtx->CaptureActive = FALSE;
     }
 
     return STATUS_SUCCESS;
@@ -949,6 +989,7 @@ static NTSTATUS NauDetectHeadsetMic(
     NAU_UPD(NAUL_JACK_DET_CTRL, NAUL_JACK_DET_RESTART, 0);
 
     for (ULONG i = 0; i < 75; i++) {
+        if (DevCtx->JackPollStop || !DevCtx->PowerActive) return STATUS_CANCELLED;
         status = I2cReadRegister16(DevCtx->SpbTarget, NAUL_IRQ_STATUS, &irqStatus);
         if (!NT_SUCCESS(status)) return status;
         if (irqStatus & NAUL_HEADSET_COMPLETE_IRQ) {
@@ -1020,23 +1061,20 @@ static NTSTATUS NauDetectHeadsetMic(
  * Nau8825_SetPlaybackState — Linux-order headphone path power up / down
  * ========================================================================= */
 
-_Use_decl_annotations_
-NTSTATUS
-Nau8825_SetPlaybackState(
+static NTSTATUS
+NauSetPlaybackStateLocked(
     _In_ PNAU8825_DEVICE_CONTEXT DevCtx,
     _In_ BOOLEAN Enable
     )
 {
     NTSTATUS status;
-    PAGED_CODE();
-    if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
-
-    if (!DevCtx->HwInitDone) {
-        status = Nau8825_InitializeHardware(DevCtx);
-        if (!NT_SUCCESS(status)) return status;
-    }
 
     if (Enable) {
+        if (!DevCtx->PowerActive) return STATUS_DEVICE_POWERED_OFF;
+        if (!DevCtx->HwInitDone) {
+            status = Nau8825_InitializeHardware(DevCtx);
+            if (!NT_SUCCESS(status)) return status;
+        }
         if (DevCtx->Streaming) return STATUS_SUCCESS;
         status = NauPlaybackOn(DevCtx);
         NauLog(L"PlaybackOnStatus", (ULONG)status);
@@ -1053,13 +1091,9 @@ Nau8825_SetPlaybackState(
     return status;
 }
 
-/* =========================================================================
- * Nau8825_SetCaptureState — Enable / Disable Headset Mic ADC
- * ========================================================================= */
-
 _Use_decl_annotations_
 NTSTATUS
-Nau8825_SetCaptureState(
+Nau8825_SetPlaybackState(
     _In_ PNAU8825_DEVICE_CONTEXT DevCtx,
     _In_ BOOLEAN Enable
     )
@@ -1068,7 +1102,26 @@ Nau8825_SetCaptureState(
     PAGED_CODE();
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
+    WdfWaitLockAcquire(DevCtx->StateLock, NULL);
+    status = NauSetPlaybackStateLocked(DevCtx, Enable);
+    WdfWaitLockRelease(DevCtx->StateLock);
+    return status;
+}
+
+/* =========================================================================
+ * Nau8825_SetCaptureState — Enable / Disable Headset Mic ADC
+ * ========================================================================= */
+
+static NTSTATUS
+NauSetCaptureStateLocked(
+    _In_ PNAU8825_DEVICE_CONTEXT DevCtx,
+    _In_ BOOLEAN Enable
+    )
+{
+    NTSTATUS status;
+
     if (Enable) {
+        if (!DevCtx->PowerActive) return STATUS_DEVICE_POWERED_OFF;
         if (DevCtx->CaptureActive) return STATUS_SUCCESS;
         if (!DevCtx->HwInitDone) {
             status = Nau8825_InitializeHardware(DevCtx);
@@ -1127,6 +1180,23 @@ Nau8825_SetCaptureState(
     return STATUS_SUCCESS;
 }
 
+_Use_decl_annotations_
+NTSTATUS
+Nau8825_SetCaptureState(
+    _In_ PNAU8825_DEVICE_CONTEXT DevCtx,
+    _In_ BOOLEAN Enable
+    )
+{
+    NTSTATUS status;
+    PAGED_CODE();
+    if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
+
+    WdfWaitLockAcquire(DevCtx->StateLock, NULL);
+    status = NauSetCaptureStateLocked(DevCtx, Enable);
+    WdfWaitLockRelease(DevCtx->StateLock);
+    return status;
+}
+
 /* =========================================================================
  * Nau8825_SetVolume — headphone mute only for now
  *
@@ -1144,16 +1214,25 @@ Nau8825_SetVolume(
     _In_ BOOLEAN Mute
     )
 {
+    NTSTATUS status;
     PAGED_CODE();
 
     if (!DevCtx->SpbTarget) return STATUS_INVALID_DEVICE_STATE;
 
+    WdfWaitLockAcquire(DevCtx->StateLock, NULL);
+    if (!DevCtx->HwInitDone) {
+        WdfWaitLockRelease(DevCtx->StateLock);
+        return STATUS_DEVICE_POWERED_OFF;
+    }
+
     DevCtx->VolumeStep = VolumeStep;
     DevCtx->Muted      = Mute;
 
-    return I2cUpdateBits16(DevCtx->SpbTarget, NAUL_HSVOL_CTRL,
+    status = I2cUpdateBits16(DevCtx->SpbTarget, NAUL_HSVOL_CTRL,
         (UINT16)(NAUL_HPL_MUTE | NAUL_HPR_MUTE),
         (UINT16)(Mute ? (NAUL_HPL_MUTE | NAUL_HPR_MUTE) : 0));
+    WdfWaitLockRelease(DevCtx->StateLock);
+    return status;
 }
 
 /* =========================================================================
@@ -1175,9 +1254,21 @@ Nau8825_ProcessJackStateChange(
 
     PAGED_CODE();
 
-    if (!DevCtx->SpbTarget || !DevCtx->JackLock) return;
+    if (!DevCtx->SpbTarget || !DevCtx->JackLock || !DevCtx->PowerActive || DevCtx->JackPollStop) return;
 
     WdfWaitLockAcquire(DevCtx->JackLock, NULL);
+
+    if (!DevCtx->PowerActive || DevCtx->JackPollStop) {
+        WdfWaitLockRelease(DevCtx->JackLock);
+        return;
+    }
+
+    if (!DevCtx->HwInitDone) {
+        if (!NT_SUCCESS(Nau8825_InitializeHardware(DevCtx))) {
+            WdfWaitLockRelease(DevCtx->JackLock);
+            return;
+        }
+    }
 
     if (!NauJackRead(DevCtx, &inserted, &raw)) {
         WdfWaitLockRelease(DevCtx->JackLock);
@@ -1300,6 +1391,10 @@ Nau8825_EvtInterruptWorkItem(
     KdPrintEx((DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
         "Nau8825Audio: EvtInterruptWorkItem triggered\n"));
 
+    if (!devCtx->PowerActive || devCtx->JackPollStop) {
+        return;
+    }
+
     /* Do not clear codec status here: the polling state machine consumes the
      * headset-completion bit after reading GENERAL_STATUS. Clearing it first
      * races automatic CTIA/OMTP classification. */
@@ -1375,6 +1470,10 @@ Nau8825_EvtIoDeviceControl(
 
     case IOCTL_CSAUDIO_SET_VOLUME: {
         PCSAUDIO_VOLUME_PARAMS volParams;
+        if (!devCtx->PowerActive) {
+            status = STATUS_DEVICE_POWERED_OFF;
+            break;
+        }
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(CSAUDIO_VOLUME_PARAMS), (PVOID*)&volParams, NULL);
         if (NT_SUCCESS(status)) {
             status = Nau8825_SetVolume(devCtx, volParams->VolumeDbLevel, volParams->Muted);
@@ -1406,6 +1505,11 @@ Nau8825_EvtIoDeviceControl(
         PCSAUDIO_REG_IO regIoOut;
         UINT16 val16 = 0;
 
+        if (!devCtx->PowerActive) {
+            status = STATUS_DEVICE_POWERED_OFF;
+            break;
+        }
+
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(CSAUDIO_REG_IO), (PVOID*)&regIoIn, NULL);
         if (!NT_SUCCESS(status)) break;
 
@@ -1423,6 +1527,10 @@ Nau8825_EvtIoDeviceControl(
 
     case IOCTL_CSAUDIO_WRITE_REG: {
         PCSAUDIO_REG_IO regIo;
+        if (!devCtx->PowerActive) {
+            status = STATUS_DEVICE_POWERED_OFF;
+            break;
+        }
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(CSAUDIO_REG_IO), (PVOID*)&regIo, NULL);
         if (NT_SUCCESS(status)) {
             status = I2cWriteRegister16(devCtx->SpbTarget, regIo->Register, regIo->Value);

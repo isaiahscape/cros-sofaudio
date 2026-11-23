@@ -78,6 +78,9 @@ CCsAudioSofHW::CCsAudioSofHW(_In_ PRESOURCELIST ResourceList, _In_ PDEVICE_OBJEC
       m_SpeakerDeviceObject(NULL),
       m_HeadphoneFileObject(NULL),
       m_HeadphoneDeviceObject(NULL),
+      m_fwFile(NULL),
+      m_fwFileSize(0),
+      m_dspPowered(FALSE),
       m_dspBooted(FALSE),
       m_gprocenWasSet(FALSE),
       m_gprocenOn(FALSE),
@@ -133,9 +136,12 @@ bool CCsAudioSofHW::ResourcesValidated()
     return NT_SUCCESS(this->CSAudioAPIInit());
 }
 
+static CSAudioEndpointType PathEndpoint(ULONG path);
+
 CCsAudioSofHW::~CCsAudioSofHW()
 {
     this->sof_deinit();
+    this->sof_free_fw_cache();
     this->CSAudioAPIDeinit();
 }
 
@@ -145,26 +151,29 @@ NTSTATUS CCsAudioSofHW::sof_init()
         return STATUS_NO_SUCH_DEVICE;
     }
 
-    // Power on Intel Audio DSP
-    if (m_BusInterface.SetDSPPowerState) {
-        m_BusInterface.SetDSPPowerState(m_BusInterface.Context, PowerDeviceD0);
+    if (!m_dspPowered) {
+        // Power on Intel Audio DSP
+        if (m_BusInterface.SetDSPPowerState) {
+            m_BusInterface.SetDSPPowerState(m_BusInterface.Context, PowerDeviceD0);
+        }
+
+        // Retrieve MMIO register BARs and NHLT topology
+        if (m_BusInterface.GetResources) {
+            m_BusInterface.GetResources(
+                m_BusInterface.Context,
+                &m_hdaBar,
+                &m_adspBar,
+                &m_ppcap,
+                &m_nhltInfo,
+                &m_pciConfig
+            );
+        }
+        m_dspPowered = TRUE;
     }
 
-    // Retrieve MMIO register BARs and NHLT topology
-    if (m_BusInterface.GetResources) {
-        m_BusInterface.GetResources(
-            m_BusInterface.Context,
-            &m_hdaBar,
-            &m_adspBar,
-            &m_ppcap,
-            &m_nhltInfo,
-            &m_pciConfig
-        );
-    }
-
-    // Boot Sound Open Firmware on the DSP (milestone 1: FW_READY only).
-    // A failed boot is logged to HKLM\SOFTWARE\CrosSofAudio\DspBoot but must
-    // not stop the device from starting, so the result is ignored here.
+    // Boot Sound Open Firmware on the DSP.
+    // A failed boot is logged to HKLM\SOFTWARE\CrosSofAudio\DspBoot; if a
+    // transient failure occurs at resume, sof_program_dma() will retry.
     (void)sof_boot_dsp();
 
     return STATUS_SUCCESS;
@@ -173,8 +182,28 @@ NTSTATUS CCsAudioSofHW::sof_init()
 NTSTATUS CCsAudioSofHW::sof_deinit()
 {
     for (ULONG p = 0; p < SOF_PATH_COUNT; p++) {
-        if (m_path[p].hStream && m_BusInterface.FreeStream) {
-            m_BusInterface.FreeStream(m_BusInterface.Context, m_path[p].hStream);
+        if (m_path[p].running > 0) {
+            if (p != SOF_PATH_DMIC && KeGetCurrentIrql() == PASSIVE_LEVEL) {
+                NotifyCodecs(PathEndpoint(p), FALSE);
+            }
+            if (KeGetCurrentIrql() == PASSIVE_LEVEL) {
+                (void)sof_stream_trigger_stop(p);
+            }
+            if (m_path[p].hStream && m_BusInterface.TriggerDSP) {
+                m_BusInterface.TriggerDSP(m_BusInterface.Context, m_path[p].hStream, FALSE);
+            }
+            if (KeGetCurrentIrql() == PASSIVE_LEVEL) {
+                (void)sof_stream_free(p);
+            }
+            m_path[p].running = 0;
+        }
+        if (m_path[p].hStream) {
+            if (m_BusInterface.CleanupDSP) {
+                (void)m_BusInterface.CleanupDSP(m_BusInterface.Context, m_path[p].hStream);
+            }
+            if (m_BusInterface.FreeStream) {
+                (void)m_BusInterface.FreeStream(m_BusInterface.Context, m_path[p].hStream);
+            }
             m_path[p].hStream = NULL;
         }
     }
@@ -182,8 +211,11 @@ NTSTATUS CCsAudioSofHW::sof_deinit()
     // Stall, reset and power off the DSP core if we booted it.
     sof_dsp_power_down();
 
-    if (m_BusInterfaceValid && m_BusInterface.SetDSPPowerState) {
-        m_BusInterface.SetDSPPowerState(m_BusInterface.Context, PowerDeviceD3);
+    if (m_dspPowered) {
+        if (m_BusInterfaceValid && m_BusInterface.SetDSPPowerState) {
+            m_BusInterface.SetDSPPowerState(m_BusInterface.Context, PowerDeviceD3);
+        }
+        m_dspPowered = FALSE;
     }
 
     return STATUS_SUCCESS;
@@ -201,6 +233,15 @@ NTSTATUS CCsAudioSofHW::sof_program_dma(eDeviceType deviceType, PMDL mdl, IPortW
 
     if (!m_BusInterfaceValid) {
         return STATUS_NO_SUCH_DEVICE;
+    }
+
+    if (!m_dspBooted || !m_ipcReady) {
+        if (KeGetCurrentIrql() == PASSIVE_LEVEL) {
+            (void)sof_init();
+        }
+        if (!m_dspBooted || !m_ipcReady) {
+            return STATUS_DEVICE_NOT_READY;
+        }
     }
 
     HDAUDIO_STREAM_FORMAT streamFormat;
@@ -306,6 +347,10 @@ static CSAudioEndpointType PathEndpoint(ULONG path)
 
 void CCsAudioSofHW::NotifyCodecs(_In_ CSAudioEndpointType endpointType, _In_ BOOLEAN start)
 {
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return;
+    }
+
     CsAudioArg arg;
     RtlZeroMemory(&arg, sizeof(CsAudioArg));
     arg.argSz = sizeof(CsAudioArg);

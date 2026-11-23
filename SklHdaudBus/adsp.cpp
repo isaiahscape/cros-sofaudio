@@ -42,6 +42,8 @@ NTSTATUS ADSPGetResources(_In_ PVOID _context, _PCI_BAR* hdaBar, _PCI_BAR* adspB
 }
 
 NTSTATUS ADSPSetPowerState(_In_ PVOID _context, _In_ DEVICE_POWER_STATE powerState) {
+	UNREFERENCED_PARAMETER(powerState);
+
 	if (!_context)
 		return STATUS_NO_SUCH_DEVICE;
 
@@ -50,13 +52,10 @@ NTSTATUS ADSPSetPowerState(_In_ PVOID _context, _In_ DEVICE_POWER_STATE powerSta
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	NTSTATUS status = STATUS_SUCCESS;
-	if (powerState == PowerDeviceD3) {
-		WdfDeviceResumeIdle(devData->FdoContext->WdfDevice);
-	} else if (powerState == PowerDeviceD0) {
-		status = WdfDeviceStopIdle(devData->FdoContext->WdfDevice, TRUE);
-	}
-	return status;
+	/* Child PDOs in WDF already hold the parent FDO in D0 while active; avoid
+	 * WdfDeviceStopIdle(WaitForD0=TRUE) / unbalanced WdfDeviceResumeIdle during
+	 * power transitions. */
+	return STATUS_SUCCESS;
 }
 
 NTSTATUS ADSPRegisterInterrupt(_In_ PVOID _context, _In_ PADSP_INTERRUPT_CALLBACK callback, _In_ PVOID callbackContext) {
@@ -304,10 +303,12 @@ void ADSPStartStopDSP(_In_ PVOID _context, _In_ HANDLE Handle, BOOL startStop) {
 		return;
 	}
 
+	WdfInterruptAcquireLock(devData->FdoContext->Interrupt);
 	if (startStop)
 		hdac_stream_start(stream);
 	else
 		hdac_stream_stop(stream);
+	WdfInterruptReleaseLock(devData->FdoContext->Interrupt);
 }
 
 void ADSPEnableSPIB(_In_ PVOID _context, _In_ HANDLE Handle, UINT32 value) {

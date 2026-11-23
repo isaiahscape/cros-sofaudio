@@ -12,7 +12,7 @@ NTSTATUS HDA_WaitForTransfer(
 	SklHdAudBusPrint(DEBUG_LEVEL_VERBOSE, DBG_IOCTL, "%s called (Count: %d)!\n", __func__, Count);
 
 	LARGE_INTEGER Timeout;
-	Timeout.QuadPart = -10LL * 1000LL * 1000LL * (LONGLONG)Count;
+	Timeout.QuadPart = -10000000LL * (LONGLONG)Count; /* 1 second per verb */
 	status = KeWaitForSingleObject(&fdoCtx->rirb.xferEvent[codecAddr], Executive, KernelMode, FALSE, &Timeout);
 	KeClearEvent(&fdoCtx->rirb.xferEvent[codecAddr]);
 
@@ -26,7 +26,22 @@ NTSTATUS HDA_WaitForTransfer(
 	}
 
 	if (TransferredCount < Count) {
-		InterlockedAdd(&fdoCtx->rirb.cmds[codecAddr], TransferredCount - Count);
+		WdfInterruptAcquireLock(fdoCtx->Interrupt);
+		LONG pending = InterlockedAdd(&fdoCtx->rirb.cmds[codecAddr], 0);
+		PHDAC_CODEC_XFER codecXfer = &fdoCtx->rirb.xfer[codecAddr];
+		LONG writeIdx = 0;
+		for (LONG idx = 0; idx < pending && idx < HDA_MAX_CORB_ENTRIES; idx++) {
+			PHDAUDIO_CODEC_TRANSFER entry = codecXfer->xfer[idx];
+			BOOLEAN isOurs = (entry >= CodecTransfer && entry < CodecTransfer + Count);
+			if (!isOurs) {
+				codecXfer->xfer[writeIdx++] = entry;
+			}
+		}
+		for (LONG idx = writeIdx; idx < HDA_MAX_CORB_ENTRIES; idx++) {
+			codecXfer->xfer[idx] = NULL;
+		}
+		InterlockedExchange(&fdoCtx->rirb.cmds[codecAddr], writeIdx);
+		WdfInterruptReleaseLock(fdoCtx->Interrupt);
 
 		SklHdAudBusPrint(DEBUG_LEVEL_VERBOSE, DBG_IOCTL, "%s timeout (Count: %d, transferred %d)!\n", __func__, Count, TransferredCount);
 		status = STATUS_IO_TIMEOUT;

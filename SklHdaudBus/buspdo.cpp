@@ -496,7 +496,7 @@ Bus_CreatePdo(
     powerCaps.WakeFromD1 = WdfTrue;
     powerCaps.DeviceWake = PowerDeviceD1;
 
-    powerCaps.DeviceState[PowerSystemWorking] = PowerDeviceD1;
+    powerCaps.DeviceState[PowerSystemWorking] = PowerDeviceD0;
     powerCaps.DeviceState[PowerSystemSleeping1] = PowerDeviceD1;
     powerCaps.DeviceState[PowerSystemSleeping2] = PowerDeviceD2;
     powerCaps.DeviceState[PowerSystemSleeping3] = PowerDeviceD2;
