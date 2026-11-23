@@ -183,6 +183,7 @@ I2cWriteRegister16(
     NTSTATUS status;
     UINT8 buffer[4];
     WDF_MEMORY_DESCRIPTOR memDesc;
+    WDF_REQUEST_SEND_OPTIONS sendOptions;
 
     buffer[0] = (UINT8)((Register >> 8) & 0xFF);
     buffer[1] = (UINT8)(Register & 0xFF);
